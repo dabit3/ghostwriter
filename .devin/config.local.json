@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Exec(ghostty)",
+      "Exec(env)",
+      "Exec(git)",
+      "Exec(zsh)",
+      "Exec(perl)"
+    ]
+  }
+}

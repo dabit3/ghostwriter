@@ -1,0 +1,330 @@
+#!/usr/bin/env zsh
+# ghostty-ai-tabs-namer -- background worker for ghostty-ai-tabs
+#
+# Invoked asynchronously by ghostty-ai-tabs.plugin.zsh. Reads a context
+# snapshot (cwd, previous title, recent commands), asks the AI for a short
+# tab title, and writes it to the tab's tty via an OSC 2 escape sequence.
+#
+#   ghostty-ai-tabs-namer --session-dir DIR --tty /dev/ttysNNN --gen N [--fresh]
+#
+# Never blocks the shell: the plugin spawns this fully detached.
+
+emulate -L zsh
+setopt extended_glob
+zmodload -F zsh/stat b:zstat 2>/dev/null
+zmodload zsh/datetime 2>/dev/null
+zmodload zsh/zselect 2>/dev/null
+zmodload zsh/system 2>/dev/null
+
+# ---------------------------------------------------------------------------
+# Args & config
+# ---------------------------------------------------------------------------
+local session_dir="" tty="" gen=0 fresh=0
+while (( $# )); do
+    case "$1" in
+        --session-dir) session_dir="$2"; shift 2 ;;
+        --tty)         tty="$2";         shift 2 ;;
+        --gen)         gen="$2";         shift 2 ;;
+        --fresh)       fresh=1;          shift   ;;
+        *)             shift ;;
+    esac
+done
+[[ -n "$session_dir" && -n "$tty" ]] || exit 1
+
+local cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/ghostty-ai-tabs"
+mkdir -p "$cache_root" 2>/dev/null
+local backend="${GHOSTTY_AI_TABS_BACKEND:-}"
+local model="${GHOSTTY_AI_TABS_MODEL:-}"
+local api_key="${GHOSTTY_AI_TABS_API_KEY:-}"
+local base_url="${GHOSTTY_AI_TABS_BASE_URL:-}"
+local curl_bin="${GHOSTTY_AI_TABS_CURL:-curl}"
+[[ "$backend" == (openai|anthropic|openrouter) ]] || exit 1
+if [[ -z "$api_key" ]]; then
+    case "$backend" in
+        openai)     api_key="${OPENAI_API_KEY:-}" ;;
+        anthropic)  api_key="${ANTHROPIC_API_KEY:-}" ;;
+        openrouter) api_key="${OPENROUTER_API_KEY:-}" ;;
+    esac
+fi
+[[ -n "$api_key" ]] || exit 1
+if [[ -z "$model" ]]; then
+    case "$backend" in
+        openai)     model="gpt-5-nano" ;;
+        anthropic)  model="claude-haiku-4-5" ;;
+        openrouter) model="anthropic/claude-haiku-4.5" ;;
+    esac
+fi
+local -i max_len="${GHOSTTY_AI_TABS_MAX_LEN:-32}"
+local -i timeout="${GHOSTTY_AI_TABS_TIMEOUT:-45}"
+local debug="${GHOSTTY_AI_TABS_DEBUG:-}"
+
+log() { [[ -n "$debug" ]] && print -r -- "$(date '+%F %T') [$$] $*" 2>/dev/null >>| "$cache_root/debug.log"; return 0 }
+local err_target=/dev/null
+[[ -n "$debug" ]] && err_target="$cache_root/debug.log"
+
+_sleep_half() {  # sleep 0.5s without forking when possible
+    if (( ${+builtins[zselect]} )); then zselect -t 50
+    else command sleep 0.5; fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Read context snapshot written by the plugin
+# ---------------------------------------------------------------------------
+local ctx_file="$session_dir/context.$gen"
+[[ -r "$ctx_file" ]] || { log "no context file $ctx_file"; exit 0 }
+
+local cwd="" prev="" line key val
+local -a cmds
+while IFS= read -r line; do
+    key="${line%%	*}" val="${line#*	}"
+    case "$key" in
+        cwd)  cwd="$val" ;;
+        prev) prev="$val" ;;
+        cmd)  cmds+=("$val") ;;
+    esac
+done < "$ctx_file"
+rm -f "$ctx_file"
+[[ -n "$cwd" ]] || exit 0
+
+# Bail out early if the user pinned a manual title.
+[[ -e "$session_dir/pin" ]] && { log "pinned; skip"; exit 0 }
+
+log "gen=$gen fresh=$fresh cwd=$cwd cmds=${#cmds} prev='$prev'"
+
+# ---------------------------------------------------------------------------
+# Git context + cache key
+# ---------------------------------------------------------------------------
+local repo="" branch="" ctx_key="$cwd"
+if builtin cd -q "$cwd" 2>/dev/null; then
+    local root
+    if root=$(command git rev-parse --show-toplevel 2>/dev/null); then
+        repo="${root:t}" ctx_key="$root"
+        branch=$(command git rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
+    fi
+fi
+
+_hash() {
+    if command -v md5 >/dev/null 2>&1;        then command md5 -q -s "$1"
+    elif command -v md5sum >/dev/null 2>&1;   then print -rn -- "$1" | command md5sum | cut -d' ' -f1
+    else print -rn -- "${1//\//_}"; fi
+}
+local cache_dir="$cache_root/repo-cache"
+local cache_file="$cache_dir/$(_hash "$ctx_key")"
+mkdir -p "$cache_dir" 2>/dev/null || true
+
+# Apply a title to the tab, unless a newer rename or a manual pin won the
+# race meanwhile. Also records the title in the per-session context map so
+# the plugin can restore it instantly when this context is revisited.
+_apply_title() {  # $1 = title
+    (
+        local applied=0 lock_fd
+        if (( ${+builtins[zsystem]} )); then
+            zsystem flock -f lock_fd "$session_dir/apply.lock" 2>/dev/null || exit 1
+        fi
+        [[ -r "$session_dir/applied_gen" ]] && applied="$(<$session_dir/applied_gen)"
+        (( applied > gen )) && { log "gen $gen outdated (applied $applied)"; exit 1 }
+        [[ -e "$session_dir/pin" ]] && { log "pinned meanwhile; skip"; exit 1 }
+        [[ -w "$tty" ]] || exit 1
+        printf '\033]2;%s\007' "$1" > "$tty"
+        print -r -- "$gen" >| "$session_dir/applied_gen"
+        print -r -- "$1"   >| "$session_dir/title"
+
+        local map_file="$session_dir/ctx-titles"
+        local -a map_lines
+        [[ -r "$map_file" ]] && map_lines=("${(@f)$(<$map_file)}")
+        map_lines=("${(@)map_lines:#${(b)ctx_key}	*}")
+        map_lines+=("$ctx_key	$1")
+        (( ${#map_lines} > 20 )) && map_lines=("${(@)map_lines[-20,-1]}")
+        print -rl -- "${map_lines[@]}" 2>/dev/null >| "$map_file.$$" && \
+            command mv -f "$map_file.$$" "$map_file" 2>/dev/null
+        log "applied gen=$gen title='$1'"
+    ) || return 1
+    return 0
+}
+
+# A tab just opened at $HOME (or /) with no commands has no signal for the
+# AI to work with -- a plain directory title is more honest than a guess.
+if (( ${#cmds} == 0 )) && [[ -z "$repo" && ( "$cwd" == "$HOME" || "$cwd" == "/" ) ]]; then
+    log "no signal (empty tab at $cwd); using basename"
+    _apply_title "${cwd:t}"
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Get a title: repo cache (fresh tabs only) or AI call
+# ---------------------------------------------------------------------------
+local title="" from_cache=0
+
+if (( fresh )) && [[ -r "$cache_file" ]]; then
+    local -A st
+    if zstat -H st +mtime "$cache_file" 2>/dev/null && \
+       (( EPOCHSECONDS - st[mtime] < 7 * 86400 )); then
+        title="$(<$cache_file)" from_cache=1
+        log "cache hit: '$title'"
+    fi
+fi
+
+if [[ -z "$title" ]]; then
+    # Redact obvious secrets before anything leaves the machine.
+    local cmds_text=""
+    if (( ${#cmds} )); then
+        cmds_text=$(print -rl -- "${cmds[@]}" | command perl -pe '
+            s/((?:api[_-]?key|access[_-]?key|secret|token|password|passwd|credential|authorization|bearer)\s*[=: ]\s*)\S+/${1}[REDACTED]/gi;
+            s/[A-Za-z0-9_+\/=-]{40,}/[REDACTED]/g;
+        ' 2>/dev/null) || cmds_text=""
+    fi
+
+    local display_cwd="${cwd/#$HOME/~}"
+    local prompt="You name terminal tab titles. Reply with ONLY the title text: 2-4 words, Title Case, at most $max_len characters, no quotes, no trailing punctuation, no explanations.
+
+Guidelines:
+- Describe the project and current activity, not the literal commands (style examples: \"Api Auth Debugging\", \"Blog Deploy Setup\").
+- Prefer the repo/project name plus what is being done in it. Base the title ONLY on the context below; never reuse the style examples.
+- If the previous title still accurately fits the current activity, reply with it EXACTLY unchanged.
+
+Context:
+Directory: $display_cwd"
+    [[ -n "$repo" ]]   && prompt+=$'\n'"Git repo: $repo${branch:+ (branch: $branch)}"
+    [[ -n "$prev" ]]   && prompt+=$'\n'"Previous title: $prev"
+    if [[ -n "$cmds_text" ]]; then
+        prompt+=$'\n'"Recent commands, oldest first:"$'\n'"$cmds_text"
+    else
+        prompt+=$'\n'"No commands yet -- the tab was just opened here."
+    fi
+
+    # Build the request for the selected backend. The prompt travels via
+    # stdin into perl's JSON encoder, so no shell quoting can corrupt it.
+    local url out_file="$session_dir/out.$$"
+    local body_file="$session_dir/body.$$" hdr_file="$session_dir/hdr.$$"
+    case "$backend" in
+        openai)     url="${base_url:-https://api.openai.com/v1}/chat/completions" ;;
+        openrouter) url="${base_url:-https://openrouter.ai/api/v1}/chat/completions" ;;
+        anthropic)  url="${base_url:-https://api.anthropic.com/v1}/messages" ;;
+    esac
+    if ! print -r -- "$prompt" | command perl -MJSON::PP -0777 -e '
+        my $prompt = <STDIN>;
+        my ($backend, $model) = @ARGV;
+        my $msgs = [ { role => "user", content => $prompt } ];
+        my $body =
+            $backend eq "anthropic"
+                ? { model => $model, max_tokens => 64, messages => $msgs }
+            : $backend eq "openai"
+                # Generous cap: reasoning models spend completion tokens
+                # thinking before they emit the title.
+                ? { model => $model, max_completion_tokens => 1000, messages => $msgs }
+                : { model => $model, max_tokens => 1000, messages => $msgs };
+        print JSON::PP->new->canonical->encode($body);
+    ' "$backend" "$model" >| "$body_file" 2>>| "$err_target"; then
+        log "failed to build request body"
+        rm -f "$body_file"
+        exit 0
+    fi
+    # Headers go through a 0600 file so the API key never shows up in `ps`.
+    (
+        umask 077
+        {
+            print -r -- "content-type: application/json"
+            if [[ "$backend" == anthropic ]]; then
+                print -r -- "x-api-key: $api_key"
+                print -r -- "anthropic-version: 2023-06-01"
+            else
+                print -r -- "Authorization: Bearer $api_key"
+            fi
+            [[ "$backend" == openrouter ]] && print -r -- "X-Title: ghostty-ai-tabs"
+        } >| "$hdr_file"
+    )
+
+    command "$curl_bin" -sS --fail --max-time "$timeout" \
+        -H @"$hdr_file" --data-binary @"$body_file" "$url" \
+        >| "$out_file" 2>>| "$err_target" &
+    local -i cpid=$! waited=0 rc=0
+    while (( waited < timeout * 2 )); do
+        kill -0 $cpid 2>/dev/null || break
+        _sleep_half
+        (( waited += 1 ))
+    done
+    if kill -0 $cpid 2>/dev/null; then
+        kill -TERM $cpid 2>/dev/null || true
+        log "AI call timed out after ${timeout}s"
+    fi
+    wait $cpid 2>/dev/null; rc=$?
+    rm -f "$hdr_file" "$body_file"
+
+    # A failed request carries an error payload, not a title (curl --fail
+    # discards non-2xx bodies); only parse the response on success.
+    local out=""
+    if (( rc == 0 )) && [[ -r "$out_file" ]]; then
+        out=$(command perl -MJSON::PP -0777 -e '
+            my $d = eval { decode_json(<STDIN>) } or exit 1;
+            my $t;
+            if ($ARGV[0] eq "anthropic") {
+                for my $b (@{ $d->{content} || [] }) {
+                    if (($b->{type} // "") eq "text") { $t = $b->{text}; last }
+                }
+            } else {
+                $t = eval { $d->{choices}[0]{message}{content} };
+            }
+            defined $t && length $t or exit 1;
+            print $t;
+        ' "$backend" < "$out_file" 2>>| "$err_target") || {
+            out=""
+            local resp_head="$(<$out_file)"
+            log "unparseable API response: ${resp_head[1,200]}"
+        }
+    else
+        log "API call failed rc=$rc; discarding output"
+    fi
+    rm -f "$out_file"
+
+    # Sanitize: first non-empty line, no control chars/quotes, trimmed, capped.
+    for line in ${(f)out}; do
+        line="${line//[$'\x00'-$'\x1f'$'\x7f']/}"
+        line="${line##[[:space:]]#}" line="${line%%[[:space:]]#}"
+        [[ -n "$line" ]] && { title="$line"; break }
+    done
+    while [[ "$title" == [\"\'\`]*[\"\'\`] && ${#title} -ge 2 ]]; do
+        title="${title[2,-2]}"
+    done
+    while [[ "$title" == *"  "* ]]; do title="${title//  / }"; done
+    title="${title##[[:space:]]#}" title="${title%%[[:space:]]#}"
+    if (( ${#title} > max_len )); then
+        title="${title[1,max_len]}"
+        [[ "$title" == *" "* ]] && title="${title% *}"   # drop cut-off word
+        title="${title%%[[:space:]]#}"
+    fi
+    log "AI raw->sanitized: '$title'"
+fi
+
+# Fallbacks: keep an existing title rather than degrading it.
+if [[ -z "$title" ]]; then
+    if [[ -n "$prev" ]]; then log "AI failed; keeping '$prev'"; exit 0
+    else title="${cwd:t}"; log "AI failed; fallback '$title'"; fi
+fi
+
+# ---------------------------------------------------------------------------
+# Apply (unless outdated or pinned meanwhile)
+# ---------------------------------------------------------------------------
+if _apply_title "$title"; then
+    # Refresh the fresh-tab cache with newly generated names.
+    if (( fresh && ! from_cache )); then
+        print -r -- "$title" >| "$cache_file" 2>/dev/null || true
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Opportunistic cleanup of stale session dirs (at most once a day)
+# ---------------------------------------------------------------------------
+local marker="$cache_root/last-cleanup" do_clean=1
+if [[ -e "$marker" ]]; then
+    local -A mst
+    zstat -H mst +mtime "$marker" 2>/dev/null && \
+        (( EPOCHSECONDS - mst[mtime] < 86400 )) && do_clean=0
+fi
+if (( do_clean )); then
+    touch "$marker" 2>/dev/null || true
+    command find "$cache_root/sessions" -mindepth 1 -maxdepth 1 -type d \
+        -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+    log "cleaned stale sessions"
+fi
+exit 0

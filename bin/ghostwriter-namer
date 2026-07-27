@@ -56,7 +56,11 @@ fi
 local -i max_len="${GHOSTWRITER_MAX_LEN:-32}"
 local -i timeout="${GHOSTWRITER_TIMEOUT:-45}"
 local debug="${GHOSTWRITER_DEBUG:-}"
-local reasoning="${GHOSTWRITER_REASONING:-minimal}"
+# "low" rather than "minimal": at minimal effort gpt-5-nano gets noticeably
+# sloppier about the prompt's rules (especially keeping a still-accurate
+# previous title unchanged), which shows up as titles flapping between
+# rewordings. "low" keeps most of the cost savings without that.
+local reasoning="${GHOSTWRITER_REASONING:-low}"
 
 # Scratch files, cleaned up on every exit path so a killed worker (closed
 # tab, logout) leaves nothing behind in the cache directory.
@@ -143,10 +147,12 @@ _apply_title() {  # $1 = title
     return 0
 }
 
-# A tab just opened at $HOME (or /) with no commands has no signal for the
-# AI to work with -- a plain directory title is more honest than a guess.
-if (( ${#cmds} == 0 )) && [[ -z "$repo" && ( "$cwd" == "$HOME" || "$cwd" == "/" ) ]]; then
-    log "no signal (empty tab at $cwd); using basename"
+# A non-repo directory nothing has run in gives the AI nothing to work with;
+# guessing from the path alone produces boilerplate ("X Project Root") that
+# then sticks to tabs merely passing through. A plain directory title is more
+# honest than a guess. (In a repo the repo name itself is enough signal.)
+if (( ${#cmds} == 0 )) && [[ -z "$repo" ]]; then
+    log "no signal (no commands, no repo, at $cwd); using basename"
     _apply_title "${cwd:t}"
     exit 0
 fi
@@ -156,7 +162,9 @@ fi
 # ---------------------------------------------------------------------------
 local title="" from_cache=0
 
-if (( fresh )) && [[ -r "$cache_file" ]]; then
+# The cross-tab cache holds one name per *repo*; non-repo directories are too
+# transient to be worth remembering (and too easy to pollute).
+if (( fresh )) && [[ -n "$repo" && -r "$cache_file" ]]; then
     local -A st
     if zstat -H st +mtime "$cache_file" 2>/dev/null && \
        (( EPOCHSECONDS - st[mtime] < 7 * 86400 )); then
@@ -304,7 +312,7 @@ fi
 if _apply_title "$title"; then
     # Refresh the fresh-tab cache with newly generated names. Written via
     # rename so concurrent tabs in one repo can't read a half-written title.
-    if (( fresh && ! from_cache )); then
+    if (( fresh && ! from_cache )) && [[ -n "$repo" ]]; then
         print -r -- "$title" >| "$cache_file.$$" 2>/dev/null && \
             command mv -f "$cache_file.$$" "$cache_file" 2>/dev/null || \
             rm -f "$cache_file.$$" 2>/dev/null

@@ -21,12 +21,13 @@
 #                              claude-haiku-4-5 / anthropic/claude-haiku-4.5)
 #   GHOSTWRITER_BASE_URL       API base URL override (proxies, compatibles)
 #   GHOSTWRITER_REASONING      reasoning effort for gpt-5 models; "off"
-#                              disables the parameter    (default: minimal)
+#                              disables the parameter        (default: low)
 #   GHOSTWRITER_CURL           path to curl binary           (default: curl)
 #   GHOSTWRITER_CMD_THRESHOLD  commands before a re-name         (default: 6)
 #   GHOSTWRITER_MIN_INTERVAL   min seconds between renames      (default: 60)
 #   GHOSTWRITER_MAX_LEN        max title length                 (default: 32)
-#   GHOSTWRITER_HISTORY        commands kept as AI context      (default: 10)
+#   GHOSTWRITER_HISTORY        commands kept per directory as
+#                              AI context                       (default: 10)
 #   GHOSTWRITER_TIMEOUT        AI call timeout in seconds       (default: 45)
 #   GHOSTWRITER_IGNORE         colon-separated path globs never sent to the
 #                              AI; matching dirs keep a plain folder title
@@ -94,8 +95,10 @@ fi
 # ---------------------------------------------------------------------------
 typeset -g _gw_cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/ghostwriter"
 typeset -g _gw_session_dir="$_gw_cache_root/sessions/${TTY:t}-$$"
-typeset -ga _gw_recent            # rolling window of "context<TAB>command"
+typeset -gA _gw_hist              # context -> newline-joined recent commands
+typeset -ga _gw_hist_order        # contexts by last use, oldest first
 typeset -ga _gw_ctx_cmds          # commands from _gw_ctx only (see _gw_collect)
+typeset -gi _gw_total_cmds=0      # commands recorded tab-wide (fresh detection)
 typeset -gi _gw_cmds_since=0      # commands since last rename trigger
 typeset -gi _gw_last_time=0       # epoch of last rename trigger
 typeset -gi _gw_gen=0             # rename generation (async ordering)
@@ -126,15 +129,13 @@ _gw_update_ctx() {
     _gw_ctx="$root"
 }
 
-# Commands are tagged with the context they ran in, so a rename triggered
-# after moving to a new repo describes *that* repo instead of inheriting the
-# command history of the one we just left.
+# Commands are remembered per context, so a rename triggered after moving to
+# a new repo describes *that* repo instead of inheriting the command history
+# of the one we just left -- and returning to an earlier repo still has its
+# commands available, no matter how much happened elsewhere in between.
 _gw_collect() {
     _gw_ctx_cmds=()
-    local entry
-    for entry in "${_gw_recent[@]}"; do
-        [[ "${entry%%$'\t'*}" == "$_gw_ctx" ]] && _gw_ctx_cmds+=("${entry#*$'\t'}")
-    done
+    [[ -n "${_gw_hist[$_gw_ctx]:-}" ]] && _gw_ctx_cmds=("${(@f)_gw_hist[$_gw_ctx]}")
 }
 
 # Directories the user never wants described to an AI. Patterns are zsh
@@ -206,10 +207,20 @@ _gw_maybe_rename() {
     [[ -e "$_gw_session_dir/pin" ]] && return 0
     _gw_ignored && return 0
     local now=$EPOCHSECONDS fresh=""
-    # "fresh" means little is known about *this* context yet, which is also
-    # when the cross-tab repo-name cache is worth consulting.
+    # "fresh" = this tab has barely been used anywhere yet. Only then is the
+    # cross-tab repo-name cache consulted and refreshed; if it also applied
+    # mid-session, a stale cached title would keep overwriting newer,
+    # activity-based ones.
+    (( _gw_total_cmds < 3 )) && fresh=1
     _gw_collect
-    (( ${#_gw_ctx_cmds} < 3 )) && fresh=1
+    # A context nothing has run in has no signal to name it with -- an AI
+    # title from just a path degrades into boilerplate ("X Project Root"),
+    # so keep the folder/remembered title until a real command happens here.
+    # Fresh tabs are the exception: naming a brand-new tab is the one case
+    # where a repo name alone beats nothing.
+    if [[ "$1" != force && -z "$fresh" ]] && (( ${#_gw_ctx_cmds} == 0 )); then
+        return 0
+    fi
 
     if [[ "$1" != force ]]; then
         local trigger=0
@@ -242,12 +253,25 @@ _gw_preexec() {
     # additionally change the context mid-command -- a rename here would
     # snapshot the directory being left; chpwd/precmd handle those.
     (( ${_gw_noise[(Ie)${cmd%% *}]} )) && return 0
-    local entry="$_gw_ctx	$cmd"
-    [[ "${_gw_recent[-1]:-}" == "$entry" ]] && return 0   # consecutive repeat
-    _gw_recent+=("$entry")
+    local hist="${_gw_hist[$_gw_ctx]:-}"
+    [[ "${hist##*$'\n'}" == "$cmd" ]] && return 0   # consecutive repeat
+    if [[ -n "$hist" ]]; then hist+=$'\n'"$cmd"; else hist="$cmd"; fi
     local -i keep=${GHOSTWRITER_HISTORY:-10}
     (( keep < 1 )) && keep=1
-    (( ${#_gw_recent} > keep )) && _gw_recent=("${(@)_gw_recent[-keep,-1]}")
+    local -a lines=("${(@f)hist}")
+    if (( ${#lines} > keep )); then
+        lines=("${(@)lines[-keep,-1]}")
+        hist="${(pj:\n:)lines}"
+    fi
+    _gw_hist[$_gw_ctx]="$hist"
+    # Track per-context recency; forget the least recently used context so a
+    # long session can't grow without bound.
+    _gw_hist_order=("${(@)_gw_hist_order:#$_gw_ctx}" "$_gw_ctx")
+    if (( ${#_gw_hist_order} > 8 )); then
+        unset "_gw_hist[${(b)_gw_hist_order[1]}]"
+        _gw_hist_order=("${(@)_gw_hist_order[2,-1]}")
+    fi
+    (( _gw_total_cmds += 1 ))
     (( _gw_cmds_since += 1 ))
     # Catch long-running commands (dev servers, builds): the rename fires while
     # they run, since precmd won't be reached until they exit.

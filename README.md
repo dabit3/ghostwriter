@@ -120,9 +120,14 @@ tabname --now      unpin and force an AI rename right now
 
 Navigation and filler (`cd`, `ls`, `clear`, `pwd`, ...) and immediately
 repeated commands are ignored: they neither count toward that threshold nor
-get sent to the AI. Each command is remembered against the directory it ran
-in, so moving to a new repo starts that repo's description from scratch
-instead of describing it with the last one's commands.
+get sent to the AI. Commands are remembered per directory, so moving to a
+new repo starts that repo's description from scratch instead of describing
+it with the last one's commands — and returning to an earlier repo picks its
+history back up.
+
+A directory you haven't run anything in keeps its plain folder name (or the
+repo's cached name): with no activity there is nothing meaningful for the AI
+to say, and guessed titles are worse than honest ones.
 
 ### Keeping it fast and cheap
 
@@ -132,10 +137,11 @@ instead of describing it with the last one's commands.
   instantly from a per-tab map, no AI call.
 - A generation barrier discards in-flight renames for directories you've
   since left, so fast navigation never stamps a stale title on a tab.
-- Empty tabs at `$HOME` skip the AI entirely.
+- Tabs sitting in a directory with no activity (including `$HOME`) skip the
+  AI entirely.
 - Pinned and ignored tabs are never touched.
-- On the gpt-5 family, reasoning effort is pinned to `minimal`: a three-word
-  tab title needs no deliberation, and the default (`medium`) spends
+- On the gpt-5 family, reasoning effort is capped at `low`: a three-word tab
+  title needs little deliberation, and the model's default (`medium`) spends
   reasoning tokens and seconds of latency to reach the same answer.
 
 ## Configuration
@@ -148,14 +154,14 @@ Set in `~/.zshrc` before sourcing the plugin.
 | `GHOSTWRITER_API_KEY` | unset | API key override; by default the backend's own env var is used |
 | `GHOSTWRITER_MODEL` | per backend | Model id (see below) |
 | `GHOSTWRITER_BASE_URL` | per backend | API base URL override (proxies, OpenAI-compatible servers) |
-| `GHOSTWRITER_REASONING` | `minimal` | Reasoning effort for gpt-5 models; `off` omits the parameter |
+| `GHOSTWRITER_REASONING` | `low` | Reasoning effort for gpt-5 models; `off` omits the parameter |
 | `GHOSTWRITER_IGNORE` | unset | Colon-separated path globs to never send to the AI |
 | `GHOSTWRITER_FORCE` | unset | `1` runs outside Ghostty, in any OSC 2 terminal |
 | `GHOSTWRITER_CURL` | `curl` | Path to the curl binary |
 | `GHOSTWRITER_CMD_THRESHOLD` | `6` | Commands before a re-name |
 | `GHOSTWRITER_MIN_INTERVAL` | `60` | Min seconds between renames |
 | `GHOSTWRITER_MAX_LEN` | `32` | Max title length |
-| `GHOSTWRITER_HISTORY` | `10` | Commands kept as AI context |
+| `GHOSTWRITER_HISTORY` | `10` | Commands kept per directory as AI context |
 | `GHOSTWRITER_TIMEOUT` | `45` | AI call timeout (seconds) |
 | `GHOSTWRITER_DEBUG` | unset | `1` logs to `~/.cache/ghostwriter/debug.log` |
 
@@ -259,7 +265,7 @@ Your API key is piped into `curl --config`, so it is never written to disk,
 never visible in `ps`, and never written to the debug log.
 
 Cost: the defaults are the cheapest current models (`gpt-5-nano`,
-`claude-haiku-4-5`) at minimal reasoning effort. The prompt is only a few
+`claude-haiku-4-5`) at low reasoning effort. The prompt is only a few
 hundred tokens, and the trigger design keeps calls rare: typically a handful
 per hour of active use. Usage and billing follow the API key's account.
 

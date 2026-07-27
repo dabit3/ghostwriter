@@ -102,7 +102,7 @@ plugin_output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
 for case_name backend model base_url key_override reasoning_env \
     effective_model expected_url expected_reasoning title in \
     openai-default openai "" "" "" "" \
-        gpt-5-nano https://api.openai.com/v1/chat/completions minimal "Openai Title" \
+        gpt-5-nano https://api.openai.com/v1/chat/completions low "Openai Title" \
     anthropic-default anthropic "" "" "" "" \
         claude-haiku-4-5 https://api.anthropic.com/v1/messages - "Anthropic Title" \
     openrouter-explicit openrouter meta-llama/llama-3.3-70b-instruct "" "" "" \

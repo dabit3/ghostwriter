@@ -13,21 +13,21 @@ trap 'rm -rf "$tmp"' EXIT
 mkdir "$tmp/alpha" "$tmp/beta"
 : > "$tmp/tty"
 
-output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostty-ai-tabs.plugin.zsh" \
+output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
     XDG_CACHE_HOME="$tmp/cache" TERM_PROGRAM=ghostty \
-    GHOSTTY_AI_TABS_BACKEND=openai GHOSTTY_AI_TABS_API_KEY=test-key \
-    GHOSTTY_AI_TABS_CURL=true zsh -dfi -c '
+    GHOSTWRITER_BACKEND=openai GHOSTWRITER_API_KEY=test-key \
+    GHOSTWRITER_CURL=true zsh -dfi -c '
         TTY="$ROOT/tty"
         builtin cd "$ROOT/alpha"
         source "$PLUGIN"
-        print -r -- "initial=$(<$_gat_session_dir/title):$_gat_gen"
+        print -r -- "initial=$(<$_gw_session_dir/title):$_gw_gen"
         builtin cd "$ROOT/beta"
-        print -r -- "forward=$(<$_gat_session_dir/title):$_gat_gen"
+        print -r -- "forward=$(<$_gw_session_dir/title):$_gw_gen"
         builtin cd "$ROOT/alpha"
-        print -r -- "return=$(<$_gat_session_dir/title):$_gat_gen"
+        print -r -- "return=$(<$_gw_session_dir/title):$_gw_gen"
         tabname "Pinned Work"
-        [[ -e "$_gat_session_dir/pin" ]] && pin_state=yes || pin_state=no
-        print -r -- "pinned=$(<$_gat_session_dir/title):$_gat_gen:$pin_state"
+        [[ -e "$_gw_session_dir/pin" ]] && pin_state=yes || pin_state=no
+        print -r -- "pinned=$(<$_gw_session_dir/title):$_gw_gen:$pin_state"
     ')
 expected=$'initial=alpha:0\nforward=beta:1\nreturn=alpha:2\npinned=Pinned Work:3:yes'
 
@@ -54,13 +54,13 @@ print -r -- 1 > "$session/applied_gen"
 print -rl -- "cwd	$tmp/alpha" "cmd	git status" > "$session/context.1"
 print -r -- '#!/bin/sh
 printf "%s" "{\"choices\":[{\"message\":{\"content\":\"Alpha Work\"}}]}"
-: > "$GHOSTWRITER_TEST_MARKER"' > "$fake_curl"
+: > "$GW_TEST_MARKER"' > "$fake_curl"
 chmod +x "$fake_curl"
 
-GHOSTWRITER_TEST_MARKER="$marker" XDG_CACHE_HOME="$tmp/race/cache" \
-    GHOSTTY_AI_TABS_BACKEND=openai GHOSTTY_AI_TABS_API_KEY=test-key \
-    GHOSTTY_AI_TABS_CURL="$fake_curl" \
-    "$repo_root/bin/ghostty-ai-tabs-namer" \
+GW_TEST_MARKER="$marker" XDG_CACHE_HOME="$tmp/race/cache" \
+    GHOSTWRITER_BACKEND=openai GHOSTWRITER_API_KEY=test-key \
+    GHOSTWRITER_CURL="$fake_curl" \
+    "$repo_root/bin/ghostwriter-namer" \
     --session-dir "$session" --tty "$session/tty" --gen 1 &
 worker_pid=$!
 

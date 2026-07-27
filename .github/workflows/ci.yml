@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install zsh
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh
+
+      - name: Check syntax
+        run: zsh -n ghostwriter.plugin.zsh bin/ghostwriter-namer tests/*.zsh
+
+      - name: Run tests
+        run: |
+          for t in tests/*.zsh; do
+            printf '\n==> %s\n' "$t"
+            zsh "$t"
+          done

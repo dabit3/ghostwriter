@@ -4,7 +4,7 @@ emulate -L zsh
 setopt err_exit no_unset pipe_fail
 
 local repo_root="${0:A:h:h}"
-local worker="$repo_root/bin/ghostty-ai-tabs-namer"
+local worker="$repo_root/bin/ghostwriter-namer"
 local tmp
 local fake_curl
 local backend
@@ -25,28 +25,33 @@ local tricky_cmd='git commit -m "fix: \"quoted\" & <html>"'
 local body_model
 local body_content
 local body_cap
+local body_reasoning
+local reasoning_env
+local expected_reasoning
 local headers
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/ghostwriter-backends.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 fake_curl="$tmp/fake-curl"
 
-# Records the URL, headers (expanding -H @file), and request body (expanding
-# --data-binary @file), then prints the canned API response.
+# Records the URL, headers (unwrapping the --config script fed on stdin), and
+# request body (expanding --data-binary @file), then prints the canned API
+# response.
 print -r -- '#!/bin/sh
-: > "$GHOSTWRITER_TEST_HEADERS"
+: > "$GW_TEST_HEADERS"
 url=
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --config)
+            [ "$2" = "-" ] && sed -n '"'"'s/^header = "\(.*\)"$/\1/p'"'"' \
+                | sed '"'"'s/\\"/"/g; s/\\\\/\\/g'"'"' >> "$GW_TEST_HEADERS"
+            shift 2 ;;
         -H)
-            case "$2" in
-                @*) cat "${2#@}" >> "$GHOSTWRITER_TEST_HEADERS" ;;
-                *)  printf "%s\n" "$2" >> "$GHOSTWRITER_TEST_HEADERS" ;;
-            esac
+            printf "%s\n" "$2" >> "$GW_TEST_HEADERS"
             shift 2 ;;
         --data-binary)
             case "$2" in
-                @*) cat "${2#@}" > "$GHOSTWRITER_TEST_BODY" ;;
-                *)  printf "%s" "$2" > "$GHOSTWRITER_TEST_BODY" ;;
+                @*) cat "${2#@}" > "$GW_TEST_BODY" ;;
+                *)  printf "%s" "$2" > "$GW_TEST_BODY" ;;
             esac
             shift 2 ;;
         --max-time) shift 2 ;;
@@ -54,22 +59,22 @@ while [ "$#" -gt 0 ]; do
         *) url=$1; shift ;;
     esac
 done
-printf "%s\n" "$url" > "$GHOSTWRITER_TEST_URL"
-printf "%s" "$GHOSTWRITER_TEST_RESPONSE"' > "$fake_curl"
+printf "%s\n" "$url" > "$GW_TEST_URL"
+printf "%s" "$GW_TEST_RESPONSE"' > "$fake_curl"
 chmod +x "$fake_curl"
 
 # ---------------------------------------------------------------------------
 # Plugin load: backend auto-detection from API key env vars
 # ---------------------------------------------------------------------------
 : > "$tmp/plugin-tty"
-plugin_output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostty-ai-tabs.plugin.zsh" \
+plugin_output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
     XDG_CACHE_HOME="$tmp/plugin-cache" TERM_PROGRAM=ghostty zsh -dfi -c '
         unset OPENAI_API_KEY ANTHROPIC_API_KEY OPENROUTER_API_KEY
-        unset GHOSTTY_AI_TABS_BACKEND GHOSTTY_AI_TABS_API_KEY
+        unset GHOSTWRITER_BACKEND GHOSTWRITER_API_KEY
         export ANTHROPIC_API_KEY=test-key
         TTY="$ROOT/plugin-tty"
         source "$PLUGIN"
-        (( ${+functions[tabname]} )) && print -r -- "loaded:$_gat_backend"
+        (( ${+functions[tabname]} )) && print -r -- "loaded:$_gw_backend"
     ')
 [[ "$plugin_output" == loaded:anthropic ]] || {
     print -u2 -r -- "plugin did not auto-select the anthropic backend from ANTHROPIC_API_KEY"
@@ -77,11 +82,11 @@ plugin_output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostty-ai-tabs.plugin.zsh" \
 }
 
 # A backend without its API key must leave the plugin inert.
-plugin_output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostty-ai-tabs.plugin.zsh" \
+plugin_output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
     XDG_CACHE_HOME="$tmp/plugin-cache" TERM_PROGRAM=ghostty zsh -dfi -c '
         unset OPENAI_API_KEY ANTHROPIC_API_KEY OPENROUTER_API_KEY
-        unset GHOSTTY_AI_TABS_API_KEY
-        export GHOSTTY_AI_TABS_BACKEND=openai OPENROUTER_API_KEY=test-key
+        unset GHOSTWRITER_API_KEY
+        export GHOSTWRITER_BACKEND=openai OPENROUTER_API_KEY=test-key
         TTY="$ROOT/plugin-tty"
         source "$PLUGIN" 2>/dev/null
         (( ${+functions[tabname]} )) && print -r -- loaded || print -r -- inert
@@ -94,15 +99,20 @@ plugin_output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostty-ai-tabs.plugin.zsh" \
 # ---------------------------------------------------------------------------
 # Worker: request shape per backend (url, auth headers, model, JSON body)
 # ---------------------------------------------------------------------------
-for case_name backend model base_url key_override effective_model expected_url title in \
-    openai-default openai "" "" "" \
-        gpt-5-nano https://api.openai.com/v1/chat/completions "Openai Title" \
-    anthropic-default anthropic "" "" "" \
-        claude-haiku-4-5 https://api.anthropic.com/v1/messages "Anthropic Title" \
-    openrouter-explicit openrouter meta-llama/llama-3.3-70b-instruct "" "" \
-        meta-llama/llama-3.3-70b-instruct https://openrouter.ai/api/v1/chat/completions "Openrouter Title" \
-    openai-override openai gpt-4o-mini https://proxy.example/v1 override-key \
-        gpt-4o-mini https://proxy.example/v1/chat/completions "Override Title"; do
+for case_name backend model base_url key_override reasoning_env \
+    effective_model expected_url expected_reasoning title in \
+    openai-default openai "" "" "" "" \
+        gpt-5-nano https://api.openai.com/v1/chat/completions minimal "Openai Title" \
+    anthropic-default anthropic "" "" "" "" \
+        claude-haiku-4-5 https://api.anthropic.com/v1/messages - "Anthropic Title" \
+    openrouter-explicit openrouter meta-llama/llama-3.3-70b-instruct "" "" "" \
+        meta-llama/llama-3.3-70b-instruct https://openrouter.ai/api/v1/chat/completions - "Openrouter Title" \
+    openai-override openai gpt-4o-mini https://proxy.example/v1 override-key "" \
+        gpt-4o-mini https://proxy.example/v1/chat/completions - "Override Title" \
+    openai-gpt51 openai gpt-5.1 "" "" "" \
+        gpt-5.1 https://api.openai.com/v1/chat/completions - "Gpt51 Title" \
+    openai-effort-off openai "" "" "" off \
+        gpt-5-nano https://api.openai.com/v1/chat/completions - "Effort Off Title"; do
     session="$tmp/$case_name/session"
     url_file="$tmp/$case_name/url"
     headers_file="$tmp/$case_name/headers"
@@ -119,16 +129,17 @@ for case_name backend model base_url key_override effective_model expected_url t
         response='{"choices":[{"message":{"role":"assistant","content":"'"$title"'"}}]}'
     fi
 
-    GHOSTWRITER_TEST_URL="$url_file" \
-        GHOSTWRITER_TEST_HEADERS="$headers_file" \
-        GHOSTWRITER_TEST_BODY="$body_file" \
-        GHOSTWRITER_TEST_RESPONSE="$response" \
+    GW_TEST_URL="$url_file" \
+        GW_TEST_HEADERS="$headers_file" \
+        GW_TEST_BODY="$body_file" \
+        GW_TEST_RESPONSE="$response" \
         XDG_CACHE_HOME="$tmp/$case_name/cache" \
-        GHOSTTY_AI_TABS_BACKEND="$backend" \
-        GHOSTTY_AI_TABS_MODEL="$model" \
-        GHOSTTY_AI_TABS_BASE_URL="$base_url" \
-        GHOSTTY_AI_TABS_API_KEY="$key_override" \
-        GHOSTTY_AI_TABS_CURL="$fake_curl" \
+        GHOSTWRITER_BACKEND="$backend" \
+        GHOSTWRITER_MODEL="$model" \
+        GHOSTWRITER_BASE_URL="$base_url" \
+        GHOSTWRITER_API_KEY="$key_override" \
+        GHOSTWRITER_REASONING="$reasoning_env" \
+        GHOSTWRITER_CURL="$fake_curl" \
         OPENAI_API_KEY=test-key-openai \
         ANTHROPIC_API_KEY=test-key-anthropic \
         OPENROUTER_API_KEY=test-key-openrouter \
@@ -183,7 +194,52 @@ for case_name backend model base_url key_override effective_model expected_url t
         print -u2 -r -- "$case_name prompt did not survive JSON encoding"
         exit 1
     }
+
+    # Naming a tab needs no deliberation: gpt-5 models must be pinned to
+    # minimal effort, and every other model must be left alone.
+    body_reasoning=$(perl -MJSON::PP -0777 -e \
+        'my $d = decode_json(<STDIN>); print $d->{reasoning_effort} // "-";' < "$body_file")
+    [[ "$body_reasoning" == "$expected_reasoning" ]] || {
+        print -u2 -r -- "$case_name sent reasoning_effort '$body_reasoning' (expected '$expected_reasoning')"
+        exit 1
+    }
+
+    # The API key must never be written anywhere: not to the session dir, not
+    # to the cache. (The recorded headers file belongs to this harness, and
+    # stands in for what only ever existed in curl's memory.)
+    if grep -rq -- "${key_override:-test-key-$backend}" \
+        "$session" "$tmp/$case_name/cache" 2>/dev/null; then
+        print -u2 -r -- "$case_name wrote the API key to disk"
+        exit 1
+    fi
 done
+
+# Keys with characters that are special to curl's --config parser must arrive
+# byte-for-byte.
+local weird_key='sk-a"b\c-123'
+session="$tmp/weird-key/session"
+mkdir -p "$session" "$tmp/weird-key/cache" "$tmp/weird-key/work"
+: > "$session/tty"
+: > "$session/apply.lock"
+print -rl -- "cwd	$tmp/weird-key/work" "cmd	git status" > "$session/context.1"
+
+GW_TEST_URL="$tmp/weird-key/url" \
+    GW_TEST_HEADERS="$tmp/weird-key/headers" \
+    GW_TEST_BODY="$tmp/weird-key/body" \
+    GW_TEST_RESPONSE='{"choices":[{"message":{"content":"Weird Key"}}]}' \
+    XDG_CACHE_HOME="$tmp/weird-key/cache" \
+    GHOSTWRITER_BACKEND=openai \
+    GHOSTWRITER_MODEL="" \
+    GHOSTWRITER_BASE_URL="" \
+    GHOSTWRITER_API_KEY="$weird_key" \
+    GHOSTWRITER_REASONING="" \
+    GHOSTWRITER_CURL="$fake_curl" \
+    "$worker" --session-dir "$session" --tty "$session/tty" --gen 1
+
+[[ "$(<$tmp/weird-key/headers)" == *"Authorization: Bearer $weird_key"* ]] || {
+    print -u2 -r -- "quoting mangled the api key: $(<$tmp/weird-key/headers)"
+    exit 1
+}
 
 # ---------------------------------------------------------------------------
 # Failure paths: HTTP errors and error payloads must never become titles
@@ -202,11 +258,11 @@ mkdir -p "$session" "$tmp/backend-fail/cache" "$tmp/backend-fail/work"
 print -rl -- "cwd	$tmp/backend-fail/work" "cmd	git status" > "$session/context.1"
 
 XDG_CACHE_HOME="$tmp/backend-fail/cache" \
-    GHOSTTY_AI_TABS_BACKEND=openai \
-    GHOSTTY_AI_TABS_MODEL="" \
-    GHOSTTY_AI_TABS_BASE_URL="" \
-    GHOSTTY_AI_TABS_API_KEY=test-key \
-    GHOSTTY_AI_TABS_CURL="$fail_curl" \
+    GHOSTWRITER_BACKEND=openai \
+    GHOSTWRITER_MODEL="" \
+    GHOSTWRITER_BASE_URL="" \
+    GHOSTWRITER_API_KEY=test-key \
+    GHOSTWRITER_CURL="$fail_curl" \
     "$worker" --session-dir "$session" --tty "$session/tty" --gen 1 --fresh
 
 title="$(<$session/title)"
@@ -229,11 +285,11 @@ mkdir -p "$session" "$tmp/backend-error/cache" "$tmp/backend-error/work"
 print -rl -- "cwd	$tmp/backend-error/work" "cmd	git status" > "$session/context.1"
 
 XDG_CACHE_HOME="$tmp/backend-error/cache" \
-    GHOSTTY_AI_TABS_BACKEND=openai \
-    GHOSTTY_AI_TABS_MODEL="" \
-    GHOSTTY_AI_TABS_BASE_URL="" \
-    GHOSTTY_AI_TABS_API_KEY=test-key \
-    GHOSTTY_AI_TABS_CURL="$error_curl" \
+    GHOSTWRITER_BACKEND=openai \
+    GHOSTWRITER_MODEL="" \
+    GHOSTWRITER_BASE_URL="" \
+    GHOSTWRITER_API_KEY=test-key \
+    GHOSTWRITER_CURL="$error_curl" \
     "$worker" --session-dir "$session" --tty "$session/tty" --gen 1 --fresh
 
 title="$(<$session/title)"

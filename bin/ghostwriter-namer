@@ -1,11 +1,11 @@
 #!/usr/bin/env zsh
-# ghostty-ai-tabs-namer -- background worker for ghostty-ai-tabs
+# ghostwriter-namer -- background worker for ghostwriter
 #
-# Invoked asynchronously by ghostty-ai-tabs.plugin.zsh. Reads a context
+# Invoked asynchronously by ghostwriter.plugin.zsh. Reads a context
 # snapshot (cwd, previous title, recent commands), asks the AI for a short
 # tab title, and writes it to the tab's tty via an OSC 2 escape sequence.
 #
-#   ghostty-ai-tabs-namer --session-dir DIR --tty /dev/ttysNNN --gen N [--fresh]
+#   ghostwriter-namer --session-dir DIR --tty /dev/ttysNNN --gen N [--fresh]
 #
 # Never blocks the shell: the plugin spawns this fully detached.
 
@@ -13,7 +13,6 @@ emulate -L zsh
 setopt extended_glob
 zmodload -F zsh/stat b:zstat 2>/dev/null
 zmodload zsh/datetime 2>/dev/null
-zmodload zsh/zselect 2>/dev/null
 zmodload zsh/system 2>/dev/null
 
 # ---------------------------------------------------------------------------
@@ -31,13 +30,13 @@ while (( $# )); do
 done
 [[ -n "$session_dir" && -n "$tty" ]] || exit 1
 
-local cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/ghostty-ai-tabs"
+local cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/ghostwriter"
 mkdir -p "$cache_root" 2>/dev/null
-local backend="${GHOSTTY_AI_TABS_BACKEND:-}"
-local model="${GHOSTTY_AI_TABS_MODEL:-}"
-local api_key="${GHOSTTY_AI_TABS_API_KEY:-}"
-local base_url="${GHOSTTY_AI_TABS_BASE_URL:-}"
-local curl_bin="${GHOSTTY_AI_TABS_CURL:-curl}"
+local backend="${GHOSTWRITER_BACKEND:-}"
+local model="${GHOSTWRITER_MODEL:-}"
+local api_key="${GHOSTWRITER_API_KEY:-}"
+local base_url="${GHOSTWRITER_BASE_URL:-}"
+local curl_bin="${GHOSTWRITER_CURL:-curl}"
 [[ "$backend" == (openai|anthropic|openrouter) ]] || exit 1
 if [[ -z "$api_key" ]]; then
     case "$backend" in
@@ -54,19 +53,20 @@ if [[ -z "$model" ]]; then
         openrouter) model="anthropic/claude-haiku-4.5" ;;
     esac
 fi
-local -i max_len="${GHOSTTY_AI_TABS_MAX_LEN:-32}"
-local -i timeout="${GHOSTTY_AI_TABS_TIMEOUT:-45}"
-local debug="${GHOSTTY_AI_TABS_DEBUG:-}"
+local -i max_len="${GHOSTWRITER_MAX_LEN:-32}"
+local -i timeout="${GHOSTWRITER_TIMEOUT:-45}"
+local debug="${GHOSTWRITER_DEBUG:-}"
+local reasoning="${GHOSTWRITER_REASONING:-minimal}"
+
+# Scratch files, cleaned up on every exit path so a killed worker (closed
+# tab, logout) leaves nothing behind in the cache directory.
+local out_file="$session_dir/out.$$"
+local body_file="$session_dir/body.$$"
+trap 'rm -f "$out_file" "$body_file"' EXIT INT TERM HUP
 
 log() { [[ -n "$debug" ]] && print -r -- "$(date '+%F %T') [$$] $*" 2>/dev/null >>| "$cache_root/debug.log"; return 0 }
 local err_target=/dev/null
 [[ -n "$debug" ]] && err_target="$cache_root/debug.log"
-
-_sleep_half() {  # sleep 0.5s without forking when possible
-    if (( ${+builtins[zselect]} )); then zselect -t 50
-    else command sleep 0.5; fi
-    return 0
-}
 
 # ---------------------------------------------------------------------------
 # Read context snapshot written by the plugin
@@ -169,8 +169,10 @@ if [[ -z "$title" ]]; then
     # Redact obvious secrets before anything leaves the machine.
     local cmds_text=""
     if (( ${#cmds} )); then
+        # The optional scheme keeps "Authorization: Bearer <token>" from
+        # redacting the word "Bearer" and letting the token itself through.
         cmds_text=$(print -rl -- "${cmds[@]}" | command perl -pe '
-            s/((?:api[_-]?key|access[_-]?key|secret|token|password|passwd|credential|authorization|bearer)\s*[=: ]\s*)\S+/${1}[REDACTED]/gi;
+            s/((?:api[_-]?key|access[_-]?key|secret|token|password|passwd|credential|authorization|bearer)\s*[=: ]\s*(?:bearer\s+|token\s+)?)\S+/${1}[REDACTED]/gi;
             s/[A-Za-z0-9_+\/=-]{40,}/[REDACTED]/g;
         ' 2>/dev/null) || cmds_text=""
     fi
@@ -195,8 +197,7 @@ Directory: $display_cwd"
 
     # Build the request for the selected backend. The prompt travels via
     # stdin into perl's JSON encoder, so no shell quoting can corrupt it.
-    local url out_file="$session_dir/out.$$"
-    local body_file="$session_dir/body.$$" hdr_file="$session_dir/hdr.$$"
+    local url
     case "$backend" in
         openai)     url="${base_url:-https://api.openai.com/v1}/chat/completions" ;;
         openrouter) url="${base_url:-https://openrouter.ai/api/v1}/chat/completions" ;;
@@ -204,7 +205,7 @@ Directory: $display_cwd"
     esac
     if ! print -r -- "$prompt" | command perl -MJSON::PP -0777 -e '
         my $prompt = <STDIN>;
-        my ($backend, $model) = @ARGV;
+        my ($backend, $model, $reasoning) = @ARGV;
         my $msgs = [ { role => "user", content => $prompt } ];
         my $body =
             $backend eq "anthropic"
@@ -214,42 +215,37 @@ Directory: $display_cwd"
                 # thinking before they emit the title.
                 ? { model => $model, max_completion_tokens => 1000, messages => $msgs }
                 : { model => $model, max_tokens => 1000, messages => $msgs };
+        # Naming a tab needs no deliberation, but the gpt-5 family reasons at
+        # medium effort by default -- slower and several times the cost for an
+        # identical three-word answer. gpt-5.1 and later reason lazily already
+        # and reject "minimal", so only the original gpt-5 line is capped.
+        $body->{reasoning_effort} = $reasoning
+            if $backend eq "openai" && $reasoning ne "off" && $model =~ /^gpt-5(?:-|$)/;
         print JSON::PP->new->canonical->encode($body);
-    ' "$backend" "$model" >| "$body_file" 2>>| "$err_target"; then
+    ' "$backend" "$model" "$reasoning" >| "$body_file" 2>>| "$err_target"; then
         log "failed to build request body"
-        rm -f "$body_file"
         exit 0
     fi
-    # Headers go through a 0600 file so the API key never shows up in `ps`.
-    (
-        umask 077
-        {
-            print -r -- "content-type: application/json"
-            if [[ "$backend" == anthropic ]]; then
-                print -r -- "x-api-key: $api_key"
-                print -r -- "anthropic-version: 2023-06-01"
-            else
-                print -r -- "Authorization: Bearer $api_key"
-            fi
-            [[ "$backend" == openrouter ]] && print -r -- "X-Title: ghostty-ai-tabs"
-        } >| "$hdr_file"
-    )
-
-    command "$curl_bin" -sS --fail --max-time "$timeout" \
-        -H @"$hdr_file" --data-binary @"$body_file" "$url" \
-        >| "$out_file" 2>>| "$err_target" &
-    local -i cpid=$! waited=0 rc=0
-    while (( waited < timeout * 2 )); do
-        kill -0 $cpid 2>/dev/null || break
-        _sleep_half
-        (( waited += 1 ))
-    done
-    if kill -0 $cpid 2>/dev/null; then
-        kill -TERM $cpid 2>/dev/null || true
-        log "AI call timed out after ${timeout}s"
-    fi
-    wait $cpid 2>/dev/null; rc=$?
-    rm -f "$hdr_file" "$body_file"
+    # Headers are piped into curl's --config, so the API key is never written
+    # to disk and never appears in the process arguments (`ps`).
+    local esc_key="${${api_key//\\/\\\\}//\"/\\\"}"
+    # --max-time bounds the whole operation (DNS included), so no watchdog of
+    # our own is needed; we are already detached from the shell.
+    local -i rc=0
+    {
+        print -r -- 'header = "content-type: application/json"'
+        if [[ "$backend" == anthropic ]]; then
+            print -r -- "header = \"x-api-key: $esc_key\""
+            print -r -- 'header = "anthropic-version: 2023-06-01"'
+        else
+            print -r -- "header = \"Authorization: Bearer $esc_key\""
+        fi
+        [[ "$backend" == openrouter ]] && print -r -- 'header = "X-Title: ghostwriter"'
+    } | command "$curl_bin" -sS --fail --max-time "$timeout" --config - \
+        --data-binary @"$body_file" "$url" \
+        >| "$out_file" 2>>| "$err_target"
+    rc=${pipestatus[2]}
+    rm -f "$body_file"
 
     # A failed request carries an error payload, not a title (curl --fail
     # discards non-2xx bodies); only parse the response on success.
@@ -306,9 +302,12 @@ fi
 # Apply (unless outdated or pinned meanwhile)
 # ---------------------------------------------------------------------------
 if _apply_title "$title"; then
-    # Refresh the fresh-tab cache with newly generated names.
+    # Refresh the fresh-tab cache with newly generated names. Written via
+    # rename so concurrent tabs in one repo can't read a half-written title.
     if (( fresh && ! from_cache )); then
-        print -r -- "$title" >| "$cache_file" 2>/dev/null || true
+        print -r -- "$title" >| "$cache_file.$$" 2>/dev/null && \
+            command mv -f "$cache_file.$$" "$cache_file" 2>/dev/null || \
+            rm -f "$cache_file.$$" 2>/dev/null
     fi
 fi
 
@@ -325,6 +324,11 @@ if (( do_clean )); then
     touch "$marker" 2>/dev/null || true
     command find "$cache_root/sessions" -mindepth 1 -maxdepth 1 -type d \
         -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+    # Scratch files from workers that were killed outright (SIGKILL runs no
+    # trap), including header files left by pre-1.0 versions.
+    command find "$cache_root/sessions" -mindepth 2 -maxdepth 2 -type f \
+        \( -name 'out.*' -o -name 'body.*' -o -name 'hdr.*' -o -name 'context.*' \) \
+        -mtime +1 -exec rm -f {} + 2>/dev/null || true
     log "cleaned stale sessions"
 fi
 exit 0

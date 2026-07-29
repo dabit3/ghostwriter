@@ -120,8 +120,8 @@ HOME="$home" GW_TEST_BODY="$tmp/nosignal/body" GW_TEST_RESPONSE='{}' \
     GHOSTWRITER_CURL="$fake_curl" \
     "$worker" --session-dir "$session" --tty "$session/tty" --gen 1
 
-[[ "$(<$session/title)" == "${home:t}" ]] || {
-    print -u2 -r -- "empty home tab was titled '$(<$session/title)' instead of '${home:t}'"
+[[ "$(<$session/title)" == "fakehome" ]] || {
+    print -u2 -r -- "empty home tab was titled '$(<$session/title)' instead of 'fakehome'"
     exit 1
 }
 if [[ -e "$tmp/nosignal/body" ]]; then
@@ -133,10 +133,10 @@ fi
 # parent folder being passed through): basename, no API call, no invented
 # "X Project Root" style names.
 session="$tmp/transit/session"
-mkdir -p "$session" "$tmp/transit/cache" "$tmp/transit/opensource"
+mkdir -p "$session" "$tmp/transit/cache" "$tmp/transit/open-source_dir"
 : > "$session/tty"
 : > "$session/apply.lock"
-print -r -- "cwd	$tmp/transit/opensource" > "$session/context.1"
+print -r -- "cwd	$tmp/transit/open-source_dir" > "$session/context.1"
 
 GW_TEST_BODY="$tmp/transit/body" GW_TEST_RESPONSE='{}' \
     XDG_CACHE_HOME="$tmp/transit/cache" \
@@ -145,8 +145,10 @@ GW_TEST_BODY="$tmp/transit/body" GW_TEST_RESPONSE='{}' \
     GHOSTWRITER_CURL="$fake_curl" \
     "$worker" --session-dir "$session" --tty "$session/tty" --gen 1 --fresh
 
-[[ "$(<$session/title)" == "opensource" ]] || {
-    print -u2 -r -- "command-less transit dir was titled '$(<$session/title)' instead of 'opensource'"
+# Separators in the folder name become word breaks, so the fallback reads
+# like a name rather than a path fragment. Only the first word is capitalized.
+[[ "$(<$session/title)" == "Open source dir" ]] || {
+    print -u2 -r -- "command-less transit dir was titled '$(<$session/title)' instead of 'Open source dir'"
     exit 1
 }
 if [[ -e "$tmp/transit/body" ]]; then

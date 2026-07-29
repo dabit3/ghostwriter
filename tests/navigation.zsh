@@ -10,7 +10,7 @@ local expected
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/ghostwriter-navigation.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
-mkdir "$tmp/alpha" "$tmp/beta"
+mkdir "$tmp/alpha" "$tmp/beta" "$tmp/two-word-dir"
 : > "$tmp/tty"
 
 output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
@@ -25,11 +25,13 @@ output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
         print -r -- "forward=$(<$_gw_session_dir/title):$_gw_gen"
         builtin cd "$ROOT/alpha"
         print -r -- "return=$(<$_gw_session_dir/title):$_gw_gen"
+        builtin cd "$ROOT/two-word-dir"
+        print -r -- "split=$(<$_gw_session_dir/title):$_gw_gen"
         tabname "Pinned Work"
         [[ -e "$_gw_session_dir/pin" ]] && pin_state=yes || pin_state=no
         print -r -- "pinned=$(<$_gw_session_dir/title):$_gw_gen:$pin_state"
     ')
-expected=$'initial=alpha:0\nforward=beta:1\nreturn=alpha:2\npinned=Pinned Work:3:yes'
+expected=$'initial=alpha:0\nforward=beta:1\nreturn=alpha:2\nsplit=Two word dir:3\npinned=Pinned Work:4:yes'
 
 if [[ "$output" != "$expected" ]]; then
     print -u2 -r -- "navigation regression"

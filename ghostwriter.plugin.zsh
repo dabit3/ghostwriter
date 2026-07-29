@@ -105,6 +105,7 @@ typeset -gi _gw_gen=0             # rename generation (async ordering)
 typeset -gi _gw_named=0           # has any rename been triggered yet?
 typeset -g  _gw_named_ctx=""      # repo root (or cwd) at last rename
 typeset -g  _gw_ctx=""            # current repo root (or cwd)
+typeset -g  _gw_pretty=""         # scratch: _gw_pretty_name's answer
 
 # Commands with no bearing on what a tab is for (see _gw_preexec).
 typeset -ga _gw_noise=(
@@ -152,6 +153,18 @@ _gw_ignored() {
         [[ "$_gw_ctx" == ${~pat} || "$_gw_ctx" == ${~pat}/* ]] && return 0
     done
     return 1
+}
+
+# Turn a directory name into a readable title: separators become spaces and
+# the result is lowercased. A single word is a name and stays lowercase
+# ("ghostwriter"); two or more read as a phrase, so the first word is
+# capitalized ("naders-portfolio" -> "Naders portfolio").
+# Answers in $_gw_pretty rather than a subshell: this runs on every cd.
+_gw_pretty_name() {
+    local -a words=( ${(L)${(s: :)${1//[-_.]/ }}} )
+    _gw_pretty="${(j: :)words}"
+    (( ${#words} > 1 )) && _gw_pretty="${(U)_gw_pretty[1]}${_gw_pretty[2,-1]}"
+    [[ -n "$_gw_pretty" ]] || _gw_pretty="$1"
 }
 
 # Write an OSC 2 title directly to this tab's tty.
@@ -308,7 +321,8 @@ _gw_chpwd() {
         [[ "$remembered" != "$cur" ]] && _gw_set_title "$remembered"
         _gw_named_ctx="$_gw_ctx"
     else
-        [[ "${_gw_ctx:t}" != "$cur" ]] && _gw_set_title "${_gw_ctx:t}"
+        _gw_pretty_name "${_gw_ctx:t}"
+        [[ "$_gw_pretty" != "$cur" ]] && _gw_set_title "$_gw_pretty"
         [[ "$_gw_ctx" == "$_gw_named_ctx" ]] && _gw_named_ctx=""
     fi
 }
@@ -362,4 +376,5 @@ tabname() {
 # ---------------------------------------------------------------------------
 _gw_update_ctx
 _gw_named_ctx="$_gw_ctx"
-_gw_set_title "${_gw_ctx:t}"
+_gw_pretty_name "${_gw_ctx:t}"
+_gw_set_title "$_gw_pretty"

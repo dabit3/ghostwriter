@@ -111,6 +111,15 @@ if builtin cd -q "$cwd" 2>/dev/null; then
     fi
 fi
 
+# Same folder-name-to-title formatting the plugin applies to its provisional
+# titles, so a fallback here never looks different from the one it replaces.
+_pretty_name() {
+    local -a words=( ${(L)${(s: :)${1//[-_.]/ }}} )
+    local out="${(j: :)words}"
+    (( ${#words} > 1 )) && out="${(U)out[1]}${out[2,-1]}"
+    print -r -- "${out:-$1}"
+}
+
 _hash() {
     if command -v md5 >/dev/null 2>&1;        then command md5 -q -s "$1"
     elif command -v md5sum >/dev/null 2>&1;   then print -rn -- "$1" | command md5sum | cut -d' ' -f1
@@ -156,7 +165,7 @@ _apply_title() {  # $1 = title
 # honest than a guess. (In a repo the repo name itself is enough signal.)
 if (( ${#cmds} == 0 )) && [[ -z "$repo" ]]; then
     log "no signal (no commands, no repo, at $cwd); using basename"
-    _apply_title "${cwd:t}"
+    _apply_title "$(_pretty_name "${cwd:t}")"
     exit 0
 fi
 
@@ -189,10 +198,11 @@ if [[ -z "$title" ]]; then
     fi
 
     local display_cwd="${cwd/#$HOME/~}"
-    local prompt="You name terminal tab titles. Reply with ONLY the title text: at most 4 words, Title Case, at most $max_len characters, no quotes, no trailing punctuation, no explanations.
+    local prompt="You name terminal tab titles. Reply with ONLY the title text: at most 4 words, at most $max_len characters, no quotes, no trailing punctuation, no explanations.
 
 Guidelines:
-- Default to the project name alone, tidied up: a repo named \"acme-dashboard\" is titled \"Acme Dashboard\".
+- Default to the project name alone, tidied up: split hyphens and underscores into separate words, and restore an apostrophe where the name is clearly possessive -- a repo named \"janes-ledger\" is titled \"Jane's ledger\".
+- Capitalization: a one-word title is all lowercase (\"ledger\"); a title of two or more words capitalizes only the first word (\"Jane's ledger\"). Never use Title Case.
 - Keep it short and plain. Do not describe what the project is or does, and do not pad the name with filler like \"Dev\", \"Work\", \"Session\", or \"Project\".
 - Only if the project name is unclear or missing, describe the current activity instead, in 2-4 words.
 - Base the title ONLY on the context below; never reuse the example name above.
@@ -308,7 +318,7 @@ fi
 # Fallbacks: keep an existing title rather than degrading it.
 if [[ -z "$title" ]]; then
     if [[ -n "$prev" ]]; then log "AI failed; keeping '$prev'"; exit 0
-    else title="${cwd:t}"; log "AI failed; fallback '$title'"; fi
+    else title="$(_pretty_name "${cwd:t}")"; log "AI failed; fallback '$title'"; fi
 fi
 
 # ---------------------------------------------------------------------------

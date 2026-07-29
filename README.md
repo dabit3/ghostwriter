@@ -6,11 +6,13 @@ you're in:
 
 ```
 before:  ~/opensource/experiments/ghostty-plugin   zsh   ~/blog
-after:   Ghostty Plugin   Api Auth Debugging   Blog
+after:   Ghostty plugin   Api auth debugging   blog
 ```
 
-Titles stay short: the project name on its own, and a few words about the
-work only when the name alone says nothing (the middle tab above).
+Titles stay short: the project name on its own, split into words
+(`naders-portfolio` becomes `Nader's portfolio`), with a few words about the
+work only when the name alone says nothing (the middle tab above). A
+one-word name stays lowercase; longer ones capitalize only the first word.
 
 Ghostty has no plugin system, so this is implemented as a zsh plugin: it
 watches your shell activity and sets the tab title through standard terminal
@@ -93,13 +95,13 @@ Open a new tab, `cd` into one of your projects, and run a few commands:
 cd ~/my-api && git status && npm test
 ```
 
-You'll see the directory name appear as the title instantly, then the AI
-title (e.g. `My Api`) replace it a few seconds later. Check what the plugin
-thinks it's doing at any time:
+You'll see the folder name appear as the title instantly, tidied up
+(`my-api` becomes `My api`), then the AI title replace it a few seconds
+later. Check what the plugin thinks it's doing at any time:
 
 ```
 $ tabname
-title: My Api
+title: My api
 mode:  auto (AI)
 ```
 

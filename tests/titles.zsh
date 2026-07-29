@@ -155,6 +155,49 @@ if [[ -e "$tmp/transit/body" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Branch context: a default branch is assumed, a feature branch is signal
+# ---------------------------------------------------------------------------
+# Runs the worker inside a git repo checked out on $2 and echoes the prompt
+# that was sent. $1 = case name.
+_prompt_on_branch() {
+    local name="$1" branch="$2" proj="$tmp/$1/proj"
+    session="$tmp/$name/session"
+    mkdir -p "$session" "$tmp/$name/cache" "$proj"
+    git -C "$proj" init -q
+    git -C "$proj" -c user.email=t@example.com -c user.name=t \
+        commit -q --allow-empty -m init
+    if [[ -n "$branch" ]]; then git -C "$proj" checkout -q -b "$branch"; fi
+    : > "$session/tty"
+    : > "$session/apply.lock"
+    print -rl -- "cwd	$proj" "cmd	npm test" > "$session/context.1"
+
+    GW_TEST_BODY="$tmp/$name/body" \
+        GW_TEST_RESPONSE='{"choices":[{"message":{"content":"Proj"}}]}' \
+        XDG_CACHE_HOME="$tmp/$name/cache" \
+        GHOSTWRITER_BACKEND=openai GHOSTWRITER_API_KEY=test-key \
+        GHOSTWRITER_MODEL="" GHOSTWRITER_BASE_URL="" GHOSTWRITER_REASONING="" \
+        GHOSTWRITER_CURL="$fake_curl" \
+        "$worker" --session-dir "$session" --tty "$session/tty" --gen 1
+    perl -MJSON::PP -0777 -e \
+        'my $d = decode_json(<STDIN>); print $d->{messages}[0]{content};' \
+        < "$tmp/$name/body"
+}
+
+sent_prompt=$(_prompt_on_branch defaultbranch "")
+[[ "$sent_prompt" != *"branch:"* ]] || {
+    print -u2 -r -- "the default branch was sent as context:"
+    print -u2 -r -- "$sent_prompt"
+    exit 1
+}
+
+sent_prompt=$(_prompt_on_branch featurebranch "feature/login")
+[[ "$sent_prompt" == *"branch: feature/login"* ]] || {
+    print -u2 -r -- "a feature branch was dropped from the context:"
+    print -u2 -r -- "$sent_prompt"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
 # The cross-tab name cache is for repos only
 # ---------------------------------------------------------------------------
 # A fresh rename inside a git repo populates the cache...

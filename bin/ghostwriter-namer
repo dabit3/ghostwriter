@@ -105,6 +105,9 @@ if builtin cd -q "$cwd" 2>/dev/null; then
     if root=$(command git rev-parse --show-toplevel 2>/dev/null); then
         repo="${root:t}" ctx_key="$root"
         branch=$(command git rev-parse --abbrev-ref HEAD 2>/dev/null) || branch=""
+        # The default branch is the assumed state; mentioning it only tempts
+        # the model into spending the title on "Main" or "Main Branch".
+        [[ "$branch" == (main|master|trunk|HEAD) ]] && branch=""
     fi
 fi
 
@@ -186,12 +189,14 @@ if [[ -z "$title" ]]; then
     fi
 
     local display_cwd="${cwd/#$HOME/~}"
-    local prompt="You name terminal tab titles. Reply with ONLY the title text: 2-4 words, Title Case, at most $max_len characters, no quotes, no trailing punctuation, no explanations.
+    local prompt="You name terminal tab titles. Reply with ONLY the title text: at most 4 words, Title Case, at most $max_len characters, no quotes, no trailing punctuation, no explanations.
 
 Guidelines:
-- Describe the project and current activity, not the literal commands (style examples: \"Api Auth Debugging\", \"Blog Deploy Setup\").
-- Prefer the repo/project name plus what is being done in it. Base the title ONLY on the context below; never reuse the style examples.
-- If the previous title still accurately fits the current activity, reply with it EXACTLY unchanged.
+- Default to the project name alone, tidied up: a repo named \"acme-dashboard\" is titled \"Acme Dashboard\".
+- Keep it short and plain. Do not describe what the project is or does, and do not pad the name with filler like \"Dev\", \"Work\", \"Session\", or \"Project\".
+- Only if the project name is unclear or missing, describe the current activity instead, in 2-4 words.
+- Base the title ONLY on the context below; never reuse the example name above.
+- If the previous title still fits, reply with it EXACTLY unchanged.
 
 Context:
 Directory: $display_cwd"

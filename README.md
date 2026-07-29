@@ -1,13 +1,16 @@
 # ghostwriter
 
 AI-generated tab titles for [Ghostty](https://ghostty.org). Instead of tabs
-named after file paths or `zsh`, your tabs name themselves after what you're
-actually doing in them:
+named after file paths or `zsh`, your tabs name themselves after the project
+you're in:
 
 ```
 before:  ~/opensource/experiments/ghostty-plugin   zsh   ~/blog
-after:   Ghostty Plugin Dev   Api Auth Debugging   Blog Deploy Setup
+after:   Ghostty Plugin   Api Auth Debugging   Blog
 ```
+
+Titles stay short: the project name on its own, and a few words about the
+work only when the name alone says nothing (the middle tab above).
 
 Ghostty has no plugin system, so this is implemented as a zsh plugin: it
 watches your shell activity and sets the tab title through standard terminal
@@ -91,12 +94,12 @@ cd ~/my-api && git status && npm test
 ```
 
 You'll see the directory name appear as the title instantly, then the AI
-title (e.g. `My Api Testing`) replace it a few seconds later. Check what the
-plugin thinks it's doing at any time:
+title (e.g. `My Api`) replace it a few seconds later. Check what the plugin
+thinks it's doing at any time:
 
 ```
 $ tabname
-title: My Api Testing
+title: My Api
 mode:  auto (AI)
 ```
 
@@ -246,12 +249,13 @@ server, build), so the tab is named while it runs.
 
 ## Privacy & cost
 
-Recent command lines (plus cwd, repo name, branch) are sent directly to the
-selected backend's API with your API key. Common secret patterns in those
-command lines (`API_KEY=...`, `Authorization: Bearer ...`, long tokens) are
-redacted before leaving the machine. Directory paths and branch names are
-sent as-is, since they carry most of the signal — treat the whole context as
-something you'd paste into that provider's chat.
+Recent command lines (plus cwd, repo name, and the branch when it isn't the
+default one) are sent directly to the selected backend's API with your API
+key. Common secret patterns in those command lines (`API_KEY=...`,
+`Authorization: Bearer ...`, long tokens) are redacted before leaving the
+machine. Directory paths and branch names are sent as-is, since they carry
+most of the signal — treat the whole context as something you'd paste into
+that provider's chat.
 
 To keep certain projects off the wire entirely, list them in
 `GHOSTWRITER_IGNORE`; matching directories (and everything under them) keep a

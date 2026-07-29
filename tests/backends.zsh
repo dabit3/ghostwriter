@@ -102,17 +102,17 @@ plugin_output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
 for case_name backend model base_url key_override reasoning_env \
     effective_model expected_url expected_reasoning title in \
     openai-default openai "" "" "" "" \
-        gpt-5-nano https://api.openai.com/v1/chat/completions low "Openai Title" \
+        gpt-5-nano https://api.openai.com/v1/chat/completions low "Openai title" \
     anthropic-default anthropic "" "" "" "" \
-        claude-haiku-4-5 https://api.anthropic.com/v1/messages - "Anthropic Title" \
+        claude-haiku-4-5 https://api.anthropic.com/v1/messages - "Anthropic title" \
     openrouter-explicit openrouter meta-llama/llama-3.3-70b-instruct "" "" "" \
-        meta-llama/llama-3.3-70b-instruct https://openrouter.ai/api/v1/chat/completions - "Openrouter Title" \
+        meta-llama/llama-3.3-70b-instruct https://openrouter.ai/api/v1/chat/completions - "Openrouter title" \
     openai-override openai gpt-4o-mini https://proxy.example/v1 override-key "" \
-        gpt-4o-mini https://proxy.example/v1/chat/completions - "Override Title" \
+        gpt-4o-mini https://proxy.example/v1/chat/completions - "Override title" \
     openai-gpt51 openai gpt-5.1 "" "" "" \
-        gpt-5.1 https://api.openai.com/v1/chat/completions - "Gpt51 Title" \
+        gpt-5.1 https://api.openai.com/v1/chat/completions - "Gpt51 title" \
     openai-effort-off openai "" "" "" off \
-        gpt-5-nano https://api.openai.com/v1/chat/completions - "Effort Off Title"; do
+        gpt-5-nano https://api.openai.com/v1/chat/completions - "Effort off title"; do
     session="$tmp/$case_name/session"
     url_file="$tmp/$case_name/url"
     headers_file="$tmp/$case_name/headers"

@@ -111,8 +111,10 @@ if builtin cd -q "$cwd" 2>/dev/null; then
     fi
 fi
 
-# Same folder-name-to-title formatting the plugin applies to its provisional
-# titles, so a fallback here never looks different from the one it replaces.
+# The house casing rule, shared with the plugin's provisional titles so an
+# AI name never looks different from the folder name it replaces: separators
+# become spaces, a one-word title stays lowercase ("ghostwriter"), and a
+# longer one capitalizes its first word only ("Naders portfolio").
 _pretty_name() {
     local -a words=( ${(L)${(s: :)${1//[-_.]/ }}} )
     local out="${(j: :)words}"
@@ -307,6 +309,9 @@ Directory: $display_cwd"
     done
     while [[ "$title" == *"  "* ]]; do title="${title//  / }"; done
     title="${title##[[:space:]]#}" title="${title%%[[:space:]]#}"
+    # Models drift back to Title Case however the prompt is worded, so the
+    # casing rule is applied here rather than merely asked for.
+    title="$(_pretty_name "$title")"
     if (( ${#title} > max_len )); then
         title="${title[1,max_len]}"
         [[ "$title" == *" "* ]] && title="${title% *}"   # drop cut-off word

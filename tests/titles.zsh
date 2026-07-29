@@ -91,8 +91,16 @@ if [[ "$sent_prompt" == *"$long_token"*      ]]; then leaked+=" long-token"; fi
 # ---------------------------------------------------------------------------
 local got
 got=$(_run messy '{"choices":[{"message":{"content":"\n  \"My  Quoted  Title\"  \nsecond line"}}]}' "vim main.go")
-[[ "$got" == "My Quoted Title" ]] || {
-    print -u2 -r -- "sanitizer produced '$got' (expected 'My Quoted Title')"
+[[ "$got" == "My quoted title" ]] || {
+    print -u2 -r -- "sanitizer produced '$got' (expected 'My quoted title')"
+    exit 1
+}
+
+# House casing is enforced on the model's answer, not just requested of it:
+# one word stays lowercase, more than one capitalizes the first word only.
+got=$(_run oneword '{"choices":[{"message":{"content":"Ghostwriter"}}]}' "vim main.go")
+[[ "$got" == "ghostwriter" ]] || {
+    print -u2 -r -- "one-word title was '$got' (expected 'ghostwriter')"
     exit 1
 }
 
@@ -218,7 +226,7 @@ GW_TEST_BODY="$tmp/repocache/body" \
     GHOSTWRITER_CURL="$fake_curl" \
     "$worker" --session-dir "$session" --tty "$session/tty" --gen 1 --fresh
 
-grep -rq "Proj Testing" "$tmp/repocache/cache/ghostwriter/repo-cache" 2>/dev/null || {
+grep -rq "Proj testing" "$tmp/repocache/cache/ghostwriter/repo-cache" 2>/dev/null || {
     print -u2 -r -- "fresh repo rename did not populate the repo cache"
     exit 1
 }
@@ -239,11 +247,11 @@ GW_TEST_BODY="$tmp/dircache/body" \
     GHOSTWRITER_CURL="$fake_curl" \
     "$worker" --session-dir "$session" --tty "$session/tty" --gen 1 --fresh
 
-[[ "$(<$session/title)" == "Plain Notes" ]] || {
+[[ "$(<$session/title)" == "Plain notes" ]] || {
     print -u2 -r -- "plain dir with commands was not AI-titled: '$(<$session/title)'"
     exit 1
 }
-if grep -rq "Plain Notes" "$tmp/dircache/cache/ghostwriter/repo-cache" 2>/dev/null; then
+if grep -rq "Plain notes" "$tmp/dircache/cache/ghostwriter/repo-cache" 2>/dev/null; then
     print -u2 -r -- "non-repo title leaked into the repo cache"
     exit 1
 fi

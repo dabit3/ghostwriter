@@ -33,6 +33,8 @@ output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
         _gw_preexec "npm test"        # consecutive repeat: ignored
         _gw_preexec "ls -la"          # noise: ignored
         _gw_preexec "cd ../repoB"     # navigation: ignored
+        _gw_preexec "../repoB"        # auto_cd navigation: ignored
+        _gw_preexec "~"               # auto_cd to home: ignored
         _gw_preexec "git push"
         _gw_ctx="$ROOT/repoB"
         _gw_preexec "cargo build"
@@ -65,9 +67,16 @@ output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
         _gw_ctx="/srv/clients/acme/api";     _gw_ignored && print -r -- "subtree=yes" || print -r -- "subtree=no"
         _gw_ctx="/srv/clients-public";       _gw_ignored && print -r -- "prefix=yes"  || print -r -- "prefix=no"
         _gw_ctx="$ROOT/repoA";               _gw_ignored && print -r -- "other=yes"   || print -r -- "other=no"
+
+        # An ignored subdirectory of a larger repo: ctx is the repo root and
+        # matches nothing, but $PWD is inside the ignored tree.
+        builtin cd "$ROOT/repoB"
+        GHOSTWRITER_IGNORE="$ROOT/repoB"
+        _gw_ctx="$ROOT"
+        _gw_ignored && print -r -- "pwdsub=yes" || print -r -- "pwdsub=no"
     ')
 
-expected=$'counted=3\ninB=cargo build\ninA=npm test|git push\nbackInA=npm test|git push\ntabs=grep -P "a b" file\ntilde=yes\nslashes=yes\nsubtree=yes\nprefix=no\nother=no'
+expected=$'counted=3\ninB=cargo build\ninA=npm test|git push\nbackInA=npm test|git push\ntabs=grep -P "a b" file\ntilde=yes\nslashes=yes\nsubtree=yes\nprefix=no\nother=no\npwdsub=yes'
 
 if [[ "$output" != "$expected" ]]; then
     print -u2 -r -- "context regression"

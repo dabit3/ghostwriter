@@ -14,7 +14,7 @@ local expected
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/ghostwriter-context.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
-mkdir "$tmp/repoA" "$tmp/repoB"
+mkdir "$tmp/repoA" "$tmp/repoB" "$tmp/src" "$tmp/temp"
 : > "$tmp/tty"
 
 # The tab is pinned up front so no worker is ever spawned: this exercises the
@@ -90,10 +90,10 @@ fi
 # ---------------------------------------------------------------------------
 # Spawn discipline. _gw_gen only moves when a barrier is raised (cd, pin) or
 # a worker is spawned, so it exposes exactly when the AI would be consulted:
-#   - a fresh tab is named right away (repo name/cache is enough signal),
-#   - but entering a context nothing has run in must NOT re-consult the AI
-#     (mid-session, a path alone yields boilerplate names),
-#   - until the first real command runs there.
+#   - a context with a meaningful folder name is titled locally, never AI,
+#   - a no-signal name (src, tmp, ...) falls through to the AI fallback,
+#   - but only once a real command has run there,
+#   - and with the AI unavailable, even those are titled locally.
 # ---------------------------------------------------------------------------
 output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
     XDG_CACHE_HOME="$tmp/cache2" TERM_PROGRAM=ghostty \
@@ -102,23 +102,33 @@ output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
         TTY="$ROOT/tty"
         builtin cd "$ROOT/repoA"
         source "$PLUGIN"
-        _gw_precmd                       # first prompt: fresh tab, spawns
-        print -r -- "freshtab=$_gw_gen"
+        _gw_precmd                       # meaningful name: local, no spawn
+        print -r -- "freshtab=$_gw_gen:$(<$_gw_session_dir/title)"
         local i
-        for i in {1..5}; do _gw_preexec "make step$i"; done
+        for i in {1..10}; do _gw_preexec "make step$i"; done
+        _gw_last_time=0                  # neutralize the interval guard
+        _gw_precmd                       # threshold reached: still no AI
+        print -r -- "threshold=$_gw_gen"
 
         local before=$_gw_gen
-        builtin cd "$ROOT/repoB"         # chpwd raises the barrier (+1) ...
+        builtin cd "$ROOT/src"           # chpwd raises the barrier (+1) ...
         _gw_precmd; _gw_precmd; _gw_precmd
-        print -r -- "quietB=$(( _gw_gen - before ))"   # ... but no spawns
+        print -r -- "quietSrc=$(( _gw_gen - before ))"   # ... but no spawns
 
         _gw_last_time=0                  # neutralize the 10s switch guard
         before=$_gw_gen
-        _gw_preexec "cargo build"        # first real command here: spawns
-        print -r -- "activeB=$(( _gw_gen - before ))"
+        _gw_preexec "python train.py"    # no-signal dir with activity: spawns
+        print -r -- "aiSrc=$(( _gw_gen - before ))"
+
+        _gw_ai=0                         # no backend available
+        builtin cd "$ROOT/temp"
+        _gw_last_time=0
+        before=$_gw_gen
+        _gw_preexec "cargo build"        # AI off: named locally instead
+        print -r -- "noai=$(( _gw_gen - before )):$(<$_gw_session_dir/title)"
     ')
 
-expected=$'freshtab=1\nquietB=1\nactiveB=1'
+expected=$'freshtab=0:repoa\nthreshold=0\nquietSrc=1\naiSrc=1\nnoai=0:temp'
 if [[ "$output" != "$expected" ]]; then
     print -u2 -r -- "spawn-discipline regression"
     print -u2 -r -- "expected:"

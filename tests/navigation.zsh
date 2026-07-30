@@ -27,11 +27,23 @@ output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
         print -r -- "return=$(<$_gw_session_dir/title):$_gw_gen"
         builtin cd "$ROOT/two-word-dir"
         print -r -- "split=$(<$_gw_session_dir/title):$_gw_gen"
+        # A cd the interactive shell is not really making: zsh completion runs
+        # one in a subshell to expand "../<TAB>". The tab must not follow it.
+        ( builtin cd "$ROOT/alpha" )
+        print -r -- "subshell=$(<$_gw_session_dir/title):$(<$_gw_session_dir/applied_gen)"
+        typeset -gA compstate=()
+        builtin cd "$ROOT/alpha"
+        print -r -- "completing=$(<$_gw_session_dir/title):$(<$_gw_session_dir/applied_gen)"
+        unset compstate
+        builtin cd "$ROOT/two-word-dir"
+        print -r -- "restored=$(<$_gw_session_dir/title):$_gw_gen"
         tabname "Pinned Work"
         [[ -e "$_gw_session_dir/pin" ]] && pin_state=yes || pin_state=no
         print -r -- "pinned=$(<$_gw_session_dir/title):$_gw_gen:$pin_state"
     ')
-expected=$'initial=alpha:0\nforward=beta:1\nreturn=alpha:2\nsplit=Two word dir:3\npinned=Pinned Work:4:yes'
+expected=$'initial=alpha:0\nforward=beta:1\nreturn=alpha:2\nsplit=Two word dir:3'
+expected+=$'\nsubshell=Two word dir:3\ncompleting=Two word dir:3\nrestored=Two word dir:3'
+expected+=$'\npinned=Pinned Work:4:yes'
 
 if [[ "$output" != "$expected" ]]; then
     print -u2 -r -- "navigation regression"

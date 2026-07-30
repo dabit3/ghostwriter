@@ -302,6 +302,14 @@ _gw_precmd() {
 # barrier so any in-flight rename for the context we just left is discarded
 # instead of stamping a stale title on this tab.
 _gw_chpwd() {
+    # Not every chpwd is the user navigating. Completion for cd (and for a
+    # bare path under auto_cd) expands "../na<TAB>" by running a plain cd in a
+    # command-substitution subshell, and shell functions do the same all the
+    # time. Those moves are undone before the next prompt, but a title painted
+    # from one is not: the tab would sit on the directory being completed and
+    # that name would go on to reach the AI as the previous title.
+    (( ZSH_SUBSHELL )) && return 0
+    (( ${+compstate} )) && return 0
     local previous_ctx="$_gw_ctx"
     _gw_update_ctx
     [[ -e "$_gw_session_dir/pin" ]] && return 0

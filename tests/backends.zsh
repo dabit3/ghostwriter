@@ -81,7 +81,8 @@ plugin_output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
     exit 1
 }
 
-# A backend without its API key must leave the plugin inert.
+# A backend without its API key still names tabs locally, but must disable
+# the AI fallback rather than call an API it has no key for.
 plugin_output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
     XDG_CACHE_HOME="$tmp/plugin-cache" TERM_PROGRAM=ghostty zsh -dfi -c '
         unset OPENAI_API_KEY ANTHROPIC_API_KEY OPENROUTER_API_KEY
@@ -89,10 +90,11 @@ plugin_output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
         export GHOSTWRITER_BACKEND=openai OPENROUTER_API_KEY=test-key
         TTY="$ROOT/plugin-tty"
         source "$PLUGIN" 2>/dev/null
-        (( ${+functions[tabname]} )) && print -r -- loaded || print -r -- inert
+        (( ${+functions[tabname]} )) || { print -r -- inert; exit }
+        print -r -- "loaded:ai=$_gw_ai"
     ')
-[[ "$plugin_output" == inert ]] || {
-    print -u2 -r -- "plugin loaded for backend openai without OPENAI_API_KEY"
+[[ "$plugin_output" == "loaded:ai=0" ]] || {
+    print -u2 -r -- "backend openai without OPENAI_API_KEY: expected loaded:ai=0, got $plugin_output"
     exit 1
 }
 

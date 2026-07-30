@@ -1,4 +1,4 @@
-# ghostwriter -- context-aware tab titles for Ghostty
+# ghostwriter -- context-aware tab titles for your terminal
 #
 # Names each tab after the project it is in: the folder (or git repo) name,
 # split into words. Only when that name carries no signal (src, tmp, ~) is an
@@ -32,17 +32,24 @@
 #   GHOSTWRITER_TIMEOUT        AI call timeout in seconds       (default: 45)
 #   GHOSTWRITER_IGNORE         colon-separated path globs never sent to the
 #                              AI; matching dirs keep a plain folder title
-#   GHOSTWRITER_FORCE=1        run outside Ghostty (any OSC 2 terminal)
+#   GHOSTWRITER_DISABLE=1      don't load the plugin at all
+#   GHOSTWRITER_FORCE=1        load even where the plugin would sit out
+#                              (dumb terminals, the Linux console)
 #   GHOSTWRITER_DEBUG=1        log to ~/.cache/ghostwriter/debug.log
 
 # ---------------------------------------------------------------------------
-# Guards: interactive zsh, inside Ghostty, not inside tmux, not loaded twice.
+# Guards: interactive zsh, not inside tmux, not loaded twice. Titles are
+# plain OSC 2 escape sequences, which every modern terminal understands, so
+# the plugin runs anywhere except terminals known not to render them.
 # ---------------------------------------------------------------------------
 [[ -o interactive ]] || return 0
 (( ${+_gw_loaded} )) && return 0
+[[ -n "${GHOSTWRITER_DISABLE:-}" ]] && return 0
 [[ -n "$TMUX" ]] && return 0
-[[ -n "${GHOSTWRITER_FORCE:-}" || "$TERM" == *ghostty* || \
-   "$TERM_PROGRAM" == (ghostty|Ghostty)* || -n "$GHOSTTY_RESOURCES_DIR" ]] || return 0
+if [[ -z "${GHOSTWRITER_FORCE:-}" ]]; then
+    [[ "$TERM" == (dumb|linux) ]] && return 0
+    [[ -n "${INSIDE_EMACS:-}" ]] && return 0
+fi
 
 typeset -g _gw_loaded=1
 

@@ -1,6 +1,6 @@
 # ghostwriter
 
-[![Made with Devin](https://img.shields.io/badge/Made%20with-Devin-blue)](https://devin.ai)
+[![Built with Devin](https://img.shields.io/badge/Built%20with-Devin-blue)](https://devin.ai)
 
 AI-generated tab titles for [Ghostty](https://ghostty.org). Instead of tabs
 named after file paths or `zsh`, your tabs name themselves after the project

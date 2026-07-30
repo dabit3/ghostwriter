@@ -1,15 +1,16 @@
-# ghostwriter -- AI-generated tab titles for Ghostty
+# ghostwriter -- context-aware tab titles for Ghostty
 #
-# Watches your shell activity (cwd, git repo, recent commands) and asks an AI
-# API (OpenAI, Anthropic, or OpenRouter) for a short descriptive tab title
-# whenever your working context meaningfully changes. All AI calls happen
-# asynchronously in the background; your prompt is never blocked.
+# Names each tab after the project it is in: the folder (or git repo) name,
+# split into words. Only when that name carries no signal (src, tmp, ~) is an
+# AI API (OpenAI, Anthropic, or OpenRouter) consulted as a fallback to name
+# the tab from recent activity. All AI calls happen asynchronously in the
+# background; your prompt is never blocked.
 #
 # Usage: source this file from ~/.zshrc, then just use your terminal.
 #   tabname            show current title & mode
-#   tabname <name>     pin a manual title (AI stops renaming this tab)
-#   tabname --auto     unpin and resume AI naming (renames immediately)
-#   tabname --now      force an AI rename right now
+#   tabname <name>     pin a manual title (automatic renaming stops)
+#   tabname --auto     unpin and resume automatic naming
+#   tabname --now      force a rename right now (uses the AI if available)
 #
 # Config (set before sourcing, or export in ~/.zshrc):
 #   GHOSTWRITER_BACKEND        openai, anthropic, or openrouter
@@ -57,46 +58,51 @@ _gw_warn_once() {
 # Resolve our own location to find the namer script.
 typeset -g _gw_dir="${${(%):-%N}:A:h}"
 typeset -g _gw_namer="$_gw_dir/bin/ghostwriter-namer"
-if [[ ! -x "$_gw_namer" ]]; then
-    print -u2 "ghostwriter: worker script not found/executable: $_gw_namer"
-    return 0
-fi
 
-# Warn (once) if no usable backend/API key exists; plugin stays inert then.
-# With no explicit backend, pick the first one whose API key is exported.
+# The AI is a fallback, consulted only for directories whose name carries no
+# signal. Missing prerequisites (API key, curl, perl, the worker script)
+# disable that fallback; folder-name titles keep working regardless.
+typeset -gi _gw_ai=1
 typeset -g _gw_backend="${GHOSTWRITER_BACKEND:-}"
 typeset -g _gw_api_key="${GHOSTWRITER_API_KEY:-}"
-if [[ -z "$_gw_backend" ]]; then
+if [[ ! -x "$_gw_namer" ]]; then
+    print -u2 "ghostwriter: worker script not found/executable: $_gw_namer; AI fallback disabled"
+    _gw_ai=0
+fi
+# With no explicit backend, pick the first one whose API key is exported.
+if (( _gw_ai )) && [[ -z "$_gw_backend" ]]; then
     if   [[ -n "${OPENAI_API_KEY:-}" ]];     then _gw_backend=openai
     elif [[ -n "${ANTHROPIC_API_KEY:-}" ]];  then _gw_backend=anthropic
     elif [[ -n "${OPENROUTER_API_KEY:-}" ]]; then _gw_backend=openrouter
     else
-        _gw_warn_once "ghostwriter: no API key found (export OPENAI_API_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY); tab naming disabled"
-        return 0
+        _gw_warn_once "ghostwriter: no API key found (export OPENAI_API_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY); AI fallback disabled"
+        _gw_ai=0
     fi
 fi
-case "$_gw_backend" in
-    openai)     [[ -n "$_gw_api_key" ]] || _gw_api_key="${OPENAI_API_KEY:-}" ;;
-    anthropic)  [[ -n "$_gw_api_key" ]] || _gw_api_key="${ANTHROPIC_API_KEY:-}" ;;
-    openrouter) [[ -n "$_gw_api_key" ]] || _gw_api_key="${OPENROUTER_API_KEY:-}" ;;
-    *)
-        print -u2 "ghostwriter: unsupported backend '$_gw_backend' (expected openai, anthropic, or openrouter)"
-        return 0
-        ;;
-esac
-if [[ -z "$_gw_api_key" ]]; then
-    _gw_warn_once "ghostwriter: no API key for backend '$_gw_backend'; tab naming disabled"
-    return 0
+if (( _gw_ai )); then
+    case "$_gw_backend" in
+        openai)     [[ -n "$_gw_api_key" ]] || _gw_api_key="${OPENAI_API_KEY:-}" ;;
+        anthropic)  [[ -n "$_gw_api_key" ]] || _gw_api_key="${ANTHROPIC_API_KEY:-}" ;;
+        openrouter) [[ -n "$_gw_api_key" ]] || _gw_api_key="${OPENROUTER_API_KEY:-}" ;;
+        *)
+            print -u2 "ghostwriter: unsupported backend '$_gw_backend' (expected openai, anthropic, or openrouter); AI fallback disabled"
+            _gw_ai=0
+            ;;
+    esac
 fi
-if ! command -v "${GHOSTWRITER_CURL:-curl}" >/dev/null 2>&1; then
-    print -u2 "ghostwriter: curl not found; tab naming disabled"
-    return 0
+if (( _gw_ai )) && [[ -z "$_gw_api_key" ]]; then
+    _gw_warn_once "ghostwriter: no API key for backend '$_gw_backend'; AI fallback disabled"
+    _gw_ai=0
+fi
+if (( _gw_ai )) && ! command -v "${GHOSTWRITER_CURL:-curl}" >/dev/null 2>&1; then
+    print -u2 "ghostwriter: curl not found; AI fallback disabled"
+    _gw_ai=0
 fi
 # The worker builds and parses every request with perl (JSON::PP); without it
 # each rename would fail silently in the background.
-if ! command -v perl >/dev/null 2>&1; then
-    print -u2 "ghostwriter: perl not found; tab naming disabled"
-    return 0
+if (( _gw_ai )) && ! command -v perl >/dev/null 2>&1; then
+    print -u2 "ghostwriter: perl not found; AI fallback disabled"
+    _gw_ai=0
 fi
 
 # ---------------------------------------------------------------------------
@@ -167,6 +173,23 @@ _gw_ignored() {
         [[ "$_gw_ctx" == ${~pat} || "$_gw_ctx" == ${~pat}/* || \
            "$PWD" == ${~pat} || "$PWD" == ${~pat}/* ]] && return 0
     done
+    return 1
+}
+
+# A context whose folder name says nothing about the work: only these fall
+# through to the AI; everywhere else the folder name itself is the title.
+typeset -ga _gw_no_signal_names=(
+    src source code dev developer projects project work workspace workspaces
+    repos repo git github gitlab opensource tmp temp test tests testing
+    scratch sandbox playground demo demos example examples sample samples
+    notes docs documents desktop downloads misc stuff new untitled app apps
+    build dist out bin lib home user users files data local share
+)
+_gw_no_signal() {
+    [[ "$_gw_ctx" == "$HOME" || "$_gw_ctx" == "/" ]] && return 0
+    local name="${(L)${_gw_ctx:t}//[-_. ]/}"
+    (( ${#name} <= 2 )) && return 0
+    (( ${_gw_no_signal_names[(Ie)$name]} )) && return 0
     return 1
 }
 
@@ -270,7 +293,18 @@ _gw_maybe_rename() {
     _gw_named_ctx="$_gw_ctx"
     _gw_cmds_since=0
     _gw_last_time=$now
-    _gw_spawn_worker "$fresh"
+    # The folder name is the title; the AI is consulted only as a fallback,
+    # for contexts whose name carries no signal (and for explicit --now
+    # renames). Every path here runs behind a chpwd barrier, so no stale
+    # in-flight title can overwrite the one painted below.
+    if (( _gw_ai )) && { [[ "$1" == force ]] || _gw_no_signal }; then
+        _gw_spawn_worker "$fresh"
+    else
+        local cur=""
+        [[ -r "$_gw_session_dir/title" ]] && cur="$(<$_gw_session_dir/title)"
+        _gw_pretty_name "${_gw_ctx:t}"
+        [[ "$_gw_pretty" != "$cur" ]] && _gw_set_title "$_gw_pretty"
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -374,11 +408,12 @@ tabname() {
         -h|--help)
             print "usage: tabname            show current title & mode"
             print "       tabname <name>     pin a manual title"
-            print "       tabname --auto     unpin, resume AI naming"
-            print "       tabname --now      unpin and force an AI rename now"
+            print "       tabname --auto     unpin, resume automatic naming"
+            print "       tabname --now      unpin and force a rename now"
             ;;
         "")
-            local t="(unset)" mode="auto (AI)"
+            local t="(unset)" mode="auto"
+            (( _gw_ai )) && _gw_no_signal && mode="auto (AI fallback)"
             [[ -r "$_gw_session_dir/title" ]] && t="$(<$_gw_session_dir/title)"
             _gw_ignored && mode="off (GHOSTWRITER_IGNORE)"
             [[ -e "$_gw_session_dir/pin" ]] && mode="pinned (manual)"

@@ -2,7 +2,7 @@
 
 [![Built with Devin](https://img.shields.io/badge/Built%20with-Devin-blue)](https://devin.ai)
 
-AI-generated tab titles for [Ghostty](https://ghostty.org). Instead of tabs
+Context-aware tab titles for [Ghostty](https://ghostty.org). Instead of tabs
 named after file paths or `zsh`, your tabs name themselves after the project
 you're in:
 
@@ -11,21 +11,24 @@ before:  ~/opensource/experiments/ghostty-plugin   zsh   ~/blog
 after:   Ghostty plugin   Api auth debugging   blog
 ```
 
-Titles stay short: the project name on its own, split into words
-(`naders-portfolio` becomes `Nader's portfolio`), with a few words about the
-work only when the name alone says nothing (the middle tab above). A
+Titles come from the folder (or git repo) name, split into words
+(`naders-portfolio` becomes `Naders portfolio`) — no network, no latency. A
 one-word name stays lowercase; longer ones capitalize only the first word.
+Only when the name alone says nothing (`src`, `tmp`, `~`, the middle tab
+above) is an AI fallback consulted to describe the work from recent
+activity.
 
 Ghostty has no plugin system, so this is implemented as a zsh plugin: it
 watches your shell activity and sets the tab title through standard terminal
-escape sequences (OSC 2). All AI calls run asynchronously in the background,
-so your prompt is never blocked.
+escape sequences (OSC 2). The rare fallback calls run asynchronously in the
+background, so your prompt is never blocked.
 
 ## Requirements
 
 - [Ghostty](https://ghostty.org) 1.x
 - zsh (your login shell)
-- An API key for one supported backend:
+- Optional, for the AI fallback — an API key for one supported backend
+  (without one, titles come purely from folder names):
   - [OpenAI](https://platform.openai.com/api-keys) (`OPENAI_API_KEY`)
   - [Anthropic](https://platform.claude.com/settings/keys) (`ANTHROPIC_API_KEY`)
   - [OpenRouter](https://openrouter.ai/keys) (`OPENROUTER_API_KEY`)
@@ -40,8 +43,9 @@ so your prompt is never blocked.
    git clone https://github.com/dabit3/ghostwriter.git ~/ghostwriter
    ```
 
-2. Export your API key in `~/.zshrc` (skip if it's already there). The
-   plugin picks the backend from whichever key it finds:
+2. Optionally, export an API key in `~/.zshrc` to enable the AI fallback
+   (skip if it's already there, or skip entirely for folder-name-only
+   titles). The plugin picks the backend from whichever key it finds:
 
    ```sh
    export OPENAI_API_KEY=sk-...        # or ANTHROPIC_API_KEY / OPENROUTER_API_KEY
@@ -97,14 +101,16 @@ Open a new tab, `cd` into one of your projects, and run a few commands:
 cd ~/my-api && git status && npm test
 ```
 
-You'll see the folder name appear as the title instantly, tidied up
-(`my-api` becomes `My api`), then the AI title replace it a few seconds
-later. Check what the plugin thinks it's doing at any time:
+The folder name appears as the title instantly, tidied up (`my-api` becomes
+`My api`) — and that's the title. Only in a directory whose name says
+nothing (`src`, `work`, `tmp`, ...) does the AI fallback rename the tab from
+recent activity a few seconds later. Check what the plugin thinks it's doing
+at any time:
 
 ```
 $ tabname
 title: My api
-mode:  auto (AI)
+mode:  auto
 ```
 
 ## Usage
@@ -113,39 +119,46 @@ Mostly: just use your terminal, tabs name themselves. Manual control:
 
 ```
 tabname            show current title & mode
-tabname <name>     pin a manual title (AI stops renaming this tab)
-tabname --auto     unpin and resume AI naming (renames immediately)
-tabname --now      unpin and force an AI rename right now
+tabname <name>     pin a manual title (automatic renaming stops)
+tabname --auto     unpin and resume automatic naming (renames immediately)
+tabname --now      unpin and force a rename right now (uses the AI fallback
+                   when available)
 ```
 
 ### When renames happen
 
-- a tab opens somewhere with signal (a repo or a non-`$HOME` directory)
-- you `cd` into a different repo/directory context (an instant provisional
-  title appears immediately; the AI refines it a few seconds later)
-- enough new commands have run (default 6, at most once per minute)
+Most titles are computed locally and instantly: opening a tab or `cd`-ing
+into a repo/directory names it after its folder, on the spot. The AI
+fallback only fires for directories whose name carries no signal — `~`,
+`src`, `tmp`, `work`, `code`, and the like — and even then only when:
+
+- a tab opens there, or you `cd` in (the plain folder name appears
+  immediately; the AI refines it a few seconds later)
+- enough new commands have run there (default 6, at most once per minute)
 
 Navigation and filler (`cd`, `ls`, `clear`, `pwd`, ...) and immediately
 repeated commands are ignored: they neither count toward that threshold nor
 get sent to the AI. Commands are remembered per directory, so moving to a
-new repo starts that repo's description from scratch instead of describing
-it with the last one's commands — and returning to an earlier repo picks its
-history back up.
+new directory starts its description from scratch instead of describing it
+with the last one's commands — and returning to an earlier directory picks
+its history back up.
 
-A directory you haven't run anything in keeps its plain folder name (or the
-repo's cached name): with no activity there is nothing meaningful for the AI
-to say, and guessed titles are worse than honest ones.
+A no-signal directory you haven't run anything in keeps its plain folder
+name (or its cached name): with no activity there is nothing meaningful for
+the AI to say, and guessed titles are worse than honest ones.
 
 ### Keeping it fast and cheap
 
-- New tabs in a repo you've already named reuse a cached title (7-day TTL),
-  so opening five tabs in one project costs one AI call.
+- Directories with meaningful names never touch the network at all — for
+  most tabs the title is pure local string-mangling.
+- New tabs in a repo the AI has already named reuse a cached title (7-day
+  TTL), so opening five tabs in one project costs at most one AI call.
 - Returning to a directory you already named this session restores its title
   instantly from a per-tab map, no AI call.
 - A generation barrier discards in-flight renames for directories you've
   since left, so fast navigation never stamps a stale title on a tab.
-- Tabs sitting in a directory with no activity (including `$HOME`) skip the
-  AI entirely.
+- Tabs sitting in a no-signal directory with no activity (including
+  `$HOME`) skip the AI entirely.
 - Pinned and ignored tabs are never touched.
 - On the gpt-5 family, reasoning effort is capped at `low`: a three-word tab
   title needs little deliberation, and the model's default (`medium`) spends
@@ -153,7 +166,9 @@ to say, and guessed titles are worse than honest ones.
 
 ## Configuration
 
-Set in `~/.zshrc` before sourcing the plugin.
+Set in `~/.zshrc` before sourcing the plugin. Everything except
+`GHOSTWRITER_FORCE`, `GHOSTWRITER_MAX_LEN`, and `GHOSTWRITER_IGNORE` only
+affects the AI fallback.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -174,9 +189,9 @@ Set in `~/.zshrc` before sourcing the plugin.
 
 ### Backends and models
 
-The plugin calls the backend's HTTP API directly with `curl`; nothing else
-needs to be installed. Each backend reads its standard API key env var and
-defaults to a small, cheap model suited to naming tabs:
+For the AI fallback, the plugin calls the backend's HTTP API directly with
+`curl`; nothing else needs to be installed. Each backend reads its standard
+API key env var and defaults to a small, cheap model suited to naming tabs:
 
 | Backend | API key env var | Default model | API |
 |---|---|---|---|
@@ -217,9 +232,11 @@ right place (with `GHOSTWRITER_DEBUG=1`, each call is logged to
   the old title behavior.
 - Does `tabname` print anything? If "command not found", the plugin didn't
   load; check the `source` line in `~/.zshrc` and that you're in Ghostty
-  (the plugin deactivates outside Ghostty and inside tmux). The plugin also
-  prints a one-line warning and stays inert when a prerequisite is missing
-  (API key, `curl`, `perl`), so open a new tab and look for that message.
+  (the plugin deactivates outside Ghostty and inside tmux).
+- Folder-name titles work with no API key; if the AI fallback specifically
+  isn't firing, the plugin prints a one-line warning when a prerequisite is
+  missing (API key, `curl`, `perl`), so open a new tab and look for that
+  message.
 - Does `tabname` report `mode: off (GHOSTWRITER_IGNORE)`? This directory is
   on your exclusion list.
 - Does the API key work on its own? For OpenAI:
@@ -253,9 +270,11 @@ server, build), so the tab is named while it runs.
 
 ## Privacy & cost
 
-Recent command lines (plus cwd, repo name, and the branch when it isn't the
-default one) are sent directly to the selected backend's API with your API
-key. Common secret patterns in those command lines (`API_KEY=...`,
+Directories with meaningful names are titled entirely on your machine;
+nothing is sent anywhere. When the AI fallback fires (no-signal directory
+names only), recent command lines (plus cwd, repo name, and the branch when
+it isn't the default one) are sent directly to the selected backend's API
+with your API key. Common secret patterns in those command lines (`API_KEY=...`,
 `Authorization: Bearer ...`, long tokens) are redacted before leaving the
 machine. Directory paths and branch names are sent as-is, since they carry
 most of the signal — treat the whole context as something you'd paste into
@@ -273,10 +292,11 @@ Your API key is piped into `curl --config`, so it is never passed as a
 command-line argument, never written to disk, and never written to the
 debug log.
 
-Cost: the defaults are the cheapest current models (`gpt-5-nano`,
+Cost: with no API key exported there is none — the fallback is simply off.
+With one, the defaults are the cheapest current models (`gpt-5-nano`,
 `claude-haiku-4-5`) at low reasoning effort. The prompt is only a few
-hundred tokens, and the trigger design keeps calls rare: typically a handful
-per hour of active use. Usage and billing follow the API key's account.
+hundred tokens, and since most directories never trigger the fallback,
+calls are rare. Usage and billing follow the API key's account.
 
 ## Limitations
 
@@ -297,9 +317,10 @@ per hour of active use. Usage and billing follow the API key's account.
 
 ## Files
 
-- `ghostwriter.plugin.zsh`: zsh hooks, rename triggers, `tabname` command
-- `bin/ghostwriter-namer`: detached worker for cache, redaction, AI call,
-  OSC 2 title write
+- `ghostwriter.plugin.zsh`: zsh hooks, local naming, rename triggers,
+  `tabname` command
+- `bin/ghostwriter-namer`: detached worker for the AI fallback (cache,
+  redaction, API call, OSC 2 title write)
 - `tests/`: regression suite (`zsh tests/<name>.zsh`, no network required)
 - State/cache: `~/.cache/ghostwriter/` (sessions auto-cleaned after 7 days)
 

@@ -2,9 +2,10 @@
 
 [![Built with Devin](https://img.shields.io/badge/Built%20with-Devin-blue)](https://devin.ai)
 
-Context-aware tab titles for [Ghostty](https://ghostty.org). Instead of tabs
-named after file paths or `zsh`, your tabs name themselves after the project
-you're in:
+Context-aware tab titles for any terminal that honors OSC 2 title sequences
+(which is nearly all of them — [Ghostty](https://ghostty.org), iTerm2,
+kitty, Alacritty, WezTerm, Terminal.app, ...). Instead of tabs named after
+file paths or `zsh`, your tabs name themselves after the project you're in:
 
 ```
 before:  ~/opensource/experiments/ghostty-plugin   zsh   ~/blog
@@ -18,14 +19,16 @@ Only when the name alone says nothing (`src`, `tmp`, `~`, the middle tab
 above) is an AI fallback consulted to describe the work from recent
 activity.
 
-Ghostty has no plugin system, so this is implemented as a zsh plugin: it
-watches your shell activity and sets the tab title through standard terminal
-escape sequences (OSC 2). The rare fallback calls run asynchronously in the
-background, so your prompt is never blocked.
+It's implemented as a zsh plugin: it watches your shell activity and sets
+the tab title through standard terminal escape sequences (OSC 2), so it
+works in any terminal that renders those — no terminal-specific hooks. The
+rare fallback calls run asynchronously in the background, so your prompt is
+never blocked.
 
 ## Requirements
 
-- [Ghostty](https://ghostty.org) 1.x
+- Any terminal that honors OSC 2 titles (nearly all of them; the plugin
+  sits out only in tmux, dumb terminals, and the Linux console)
 - zsh (your login shell)
 - Optional, for the AI fallback — an API key for one supported backend
   (without one, titles come purely from folder names):
@@ -65,7 +68,8 @@ background, so your prompt is never blocked.
    and add `ghostwriter` to `plugins=(...)` for Oh My Zsh, or
    `zinit light dabit3/ghostwriter` / `antidote bundle dabit3/ghostwriter`.
 
-4. Tell Ghostty's shell integration to stop overwriting titles by adding
+4. **Ghostty users:** tell Ghostty's shell integration to stop overwriting
+   titles by adding
    `shell-integration-features = no-title` to your Ghostty config. On macOS:
 
    ```sh
@@ -80,7 +84,10 @@ background, so your prompt is never blocked.
 
    (The macOS path contains a space, so keep the quotes if you type it
    yourself.) This only disables Ghostty's built-in cwd-as-title behavior;
-   cursor, sudo, and path integration stay on.
+   cursor, sudo, and path integration stay on. Other terminals: if yours
+   auto-sets titles from the cwd, turn that setting off so the two don't
+   fight (in iTerm2, for example, uncheck the title components under
+   Profiles > General > Title).
 
 5. **Oh My Zsh users only:** OMZ has its own title auto-setter that will
    fight the plugin. Disable it in `~/.zshrc` (before `source
@@ -90,8 +97,9 @@ background, so your prompt is never blocked.
    DISABLE_AUTO_TITLE="true"
    ```
 
-6. Reload the Ghostty config (`cmd+shift+,` on macOS) and **open a new tab**.
-   Tabs opened before the config change keep the old behavior until closed.
+6. Reload your terminal's config (`cmd+shift+,` in Ghostty on macOS) and
+   **open a new tab**. Tabs opened before the config change keep the old
+   behavior until closed.
 
 ## Try it out
 
@@ -167,8 +175,8 @@ the AI to say, and guessed titles are worse than honest ones.
 ## Configuration
 
 Set in `~/.zshrc` before sourcing the plugin. Everything except
-`GHOSTWRITER_FORCE`, `GHOSTWRITER_MAX_LEN`, and `GHOSTWRITER_IGNORE` only
-affects the AI fallback.
+`GHOSTWRITER_DISABLE`, `GHOSTWRITER_FORCE`, `GHOSTWRITER_MAX_LEN`, and
+`GHOSTWRITER_IGNORE` only affects the AI fallback.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -178,7 +186,8 @@ affects the AI fallback.
 | `GHOSTWRITER_BASE_URL` | per backend | API base URL override (proxies, OpenAI-compatible servers) |
 | `GHOSTWRITER_REASONING` | `low` | Reasoning effort for gpt-5 models; `off` omits the parameter |
 | `GHOSTWRITER_IGNORE` | unset | Colon-separated path globs to never send to the AI |
-| `GHOSTWRITER_FORCE` | unset | `1` runs outside Ghostty, in any OSC 2 terminal |
+| `GHOSTWRITER_DISABLE` | unset | `1` skips loading the plugin entirely |
+| `GHOSTWRITER_FORCE` | unset | `1` loads even where the plugin would sit out (dumb terminals, Linux console) |
 | `GHOSTWRITER_CURL` | `curl` | Path to the curl binary |
 | `GHOSTWRITER_CMD_THRESHOLD` | `6` | Commands before a re-name |
 | `GHOSTWRITER_MIN_INTERVAL` | `60` | Min seconds between renames |
@@ -228,11 +237,13 @@ right place (with `GHOSTWRITER_DEBUG=1`, each call is logged to
 
 **Tabs aren't renaming at all**
 
-- Are you in a *new* tab? Tabs opened before the Ghostty config change keep
-  the old title behavior.
+- Are you in a *new* tab? Tabs opened before a config change keep the old
+  title behavior.
 - Does `tabname` print anything? If "command not found", the plugin didn't
-  load; check the `source` line in `~/.zshrc` and that you're in Ghostty
-  (the plugin deactivates outside Ghostty and inside tmux).
+  load; check the `source` line in `~/.zshrc` (the plugin deactivates
+  inside tmux, in dumb terminals, and when `GHOSTWRITER_DISABLE=1` is set).
+- Does your terminal honor OSC 2 titles at all? Test with
+  `printf '\033]2;hello\007'` — the tab/window title should read "hello".
 - Folder-name titles work with no API key; if the AI fallback specifically
   isn't firing, the plugin prints a one-line warning when a prerequisite is
   missing (API key, `curl`, `perl`), so open a new tab and look for that
@@ -252,8 +263,10 @@ right place (with `GHOSTWRITER_DEBUG=1`, each call is logged to
 
 **Titles keep getting overwritten with the directory path**
 
-- Ghostty's `no-title` setting isn't active in this tab: reload config and
-  open a fresh tab.
+- Your terminal's own set-title-from-cwd feature is fighting the plugin:
+  in Ghostty confirm the `no-title` setting is active in this tab (reload
+  config and open a fresh tab); in other terminals turn off their
+  title/cwd integration.
 - Oh My Zsh: confirm `DISABLE_AUTO_TITLE="true"` is set.
 
 **Titles are weird or wrong**
@@ -304,15 +317,15 @@ calls are rare. Usage and billing follow the API key's account.
 - TUI apps that set their own titles (e.g. Claude Code) will win while they
   run; the next rename trigger takes the title back.
 - zsh only for now.
-- Built for Ghostty, but nothing in it is Ghostty-specific beyond the
-  terminal check; `GHOSTWRITER_FORCE=1` runs it in any terminal that honors
-  OSC 2 titles.
+- A terminal that ignores OSC 2 titles simply never shows them; the plugin
+  does no harm there, but `GHOSTWRITER_DISABLE=1` skips it cleanly.
 
 ## Uninstall
 
 1. Remove the `source ...ghostwriter.plugin.zsh` line from `~/.zshrc`.
-2. Remove `shell-integration-features = no-title` from your Ghostty config
-   (and re-enable OMZ auto-title if you disabled it).
+2. Undo any terminal config changes (e.g. remove
+   `shell-integration-features = no-title` from your Ghostty config, and
+   re-enable OMZ auto-title if you disabled it).
 3. `rm -rf ~/.cache/ghostwriter` to clear state, then delete the repo.
 
 ## Files

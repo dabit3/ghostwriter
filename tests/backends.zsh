@@ -81,6 +81,36 @@ plugin_output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
     exit 1
 }
 
+# Titles are plain OSC 2, so the plugin must load in any ordinary terminal
+# (no Ghostty required) -- and sit out only where titles can't render or the
+# user opted out.
+local guard_case guard_env expected
+for guard_case guard_env in \
+    plain    "TERM=xterm-256color" \
+    dumb     "TERM=dumb" \
+    console  "TERM=linux" \
+    tmux     "TERM=xterm-256color TMUX=/tmp/tmux-1000/default,1,0" \
+    disabled "TERM=xterm-256color GHOSTWRITER_DISABLE=1" \
+    forced   "TERM=dumb GHOSTWRITER_FORCE=1"; do
+    plugin_output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
+        XDG_CACHE_HOME="$tmp/plugin-cache" GUARD_ENV="$guard_env" zsh -dfi -c '
+            unset TMUX TERM_PROGRAM GHOSTTY_RESOURCES_DIR INSIDE_EMACS
+            unset GHOSTWRITER_BACKEND GHOSTWRITER_API_KEY
+            export OPENAI_API_KEY=test-key ${=GUARD_ENV}
+            TTY="$ROOT/plugin-tty"
+            source "$PLUGIN" 2>/dev/null
+            (( ${+functions[tabname]} )) && print -r -- loaded || print -r -- inert
+        ')
+    case "$guard_case" in
+        plain|forced) expected=loaded ;;
+        *)            expected=inert ;;
+    esac
+    [[ "$plugin_output" == "$expected" ]] || {
+        print -u2 -r -- "terminal guard '$guard_case' was $plugin_output (expected $expected)"
+        exit 1
+    }
+done
+
 # A backend without its API key still names tabs locally, but must disable
 # the AI fallback rather than call an API it has no key for.
 plugin_output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \

@@ -269,8 +269,9 @@ plain folder title and never trigger a request:
 export GHOSTWRITER_IGNORE="~/work/acme:~/private/*"
 ```
 
-Your API key is piped into `curl --config`, so it is never written to disk,
-never visible in `ps`, and never written to the debug log.
+Your API key is piped into `curl --config`, so it is never passed as a
+command-line argument, never written to disk, and never written to the
+debug log.
 
 Cost: the defaults are the cheapest current models (`gpt-5-nano`,
 `claude-haiku-4-5`) at low reasoning effort. The prompt is only a few

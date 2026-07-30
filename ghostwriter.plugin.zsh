@@ -45,6 +45,15 @@
 
 typeset -g _gw_loaded=1
 
+# Missing configuration is worth saying once, not in every new tab.
+_gw_warn_once() {
+    local marker="${XDG_CACHE_HOME:-$HOME/.cache}/ghostwriter/warned"
+    [[ -e "$marker" && "$(<$marker)" == "$1" ]] && return 0
+    print -u2 -r -- "$1 (this warning is shown once)"
+    mkdir -p "${marker:h}" 2>/dev/null
+    print -r -- "$1" >| "$marker" 2>/dev/null
+}
+
 # Resolve our own location to find the namer script.
 typeset -g _gw_dir="${${(%):-%N}:A:h}"
 typeset -g _gw_namer="$_gw_dir/bin/ghostwriter-namer"
@@ -62,7 +71,7 @@ if [[ -z "$_gw_backend" ]]; then
     elif [[ -n "${ANTHROPIC_API_KEY:-}" ]];  then _gw_backend=anthropic
     elif [[ -n "${OPENROUTER_API_KEY:-}" ]]; then _gw_backend=openrouter
     else
-        print -u2 "ghostwriter: no API key found (export OPENAI_API_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY); tab naming disabled"
+        _gw_warn_once "ghostwriter: no API key found (export OPENAI_API_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY); tab naming disabled"
         return 0
     fi
 fi
@@ -76,7 +85,7 @@ case "$_gw_backend" in
         ;;
 esac
 if [[ -z "$_gw_api_key" ]]; then
-    print -u2 "ghostwriter: no API key for backend '$_gw_backend'; tab naming disabled"
+    _gw_warn_once "ghostwriter: no API key for backend '$_gw_backend'; tab naming disabled"
     return 0
 fi
 if ! command -v "${GHOSTWRITER_CURL:-curl}" >/dev/null 2>&1; then
@@ -114,6 +123,9 @@ typeset -ga _gw_noise=(
 )
 
 mkdir -p "$_gw_session_dir" 2>/dev/null
+# Context snapshots hold command lines before the worker's redaction pass;
+# keep the whole cache private on shared machines.
+chmod 700 "$_gw_cache_root" 2>/dev/null
 : >| "$_gw_session_dir/apply.lock" 2>/dev/null
 
 zmodload zsh/datetime 2>/dev/null   # for $EPOCHSECONDS without forking
@@ -150,7 +162,10 @@ _gw_ignored() {
         # Tolerate the trailing and doubled slashes people naturally type.
         while [[ "$pat" == *//* ]]; do pat="${pat:gs|//|/|}"; done
         [[ "$pat" == ?*/ ]] && pat="${pat%/}"
-        [[ "$_gw_ctx" == ${~pat} || "$_gw_ctx" == ${~pat}/* ]] && return 0
+        # Match the current directory as well as the context (repo root):
+        # an ignored subdirectory of a larger repo must stay ignored.
+        [[ "$_gw_ctx" == ${~pat} || "$_gw_ctx" == ${~pat}/* || \
+           "$PWD" == ${~pat} || "$PWD" == ${~pat}/* ]] && return 0
     done
     return 1
 }
@@ -167,11 +182,14 @@ _gw_pretty_name() {
     [[ -n "$_gw_pretty" ]] || _gw_pretty="$1"
 }
 
-# Write an OSC 2 title directly to this tab's tty.
+# Write an OSC 2 title directly to this tab's tty. Control characters are
+# stripped: a directory name may contain any byte, and a stray \a or \e would
+# end the OSC early and feed the rest to the terminal as escape sequences.
 _gw_set_title() {
     [[ -w "$TTY" ]] || return 0
-    printf '\033]2;%s\007' "$1" > "$TTY"
-    print -r -- "$1" >| "$_gw_session_dir/title" 2>/dev/null
+    local title="${1//[[:cntrl:]]/}"
+    printf '\033]2;%s\007' "$title" > "$TTY"
+    print -r -- "$title" >| "$_gw_session_dir/title" 2>/dev/null
 }
 
 # Invalidate any in-flight rename: workers whose generation is below the
@@ -266,6 +284,14 @@ _gw_preexec() {
     # additionally change the context mid-command -- a rename here would
     # snapshot the directory being left; chpwd/precmd handle those.
     (( ${_gw_noise[(Ie)${cmd%% *}]} )) && return 0
+    # Under auto_cd a bare directory path is itself a command; it is
+    # navigation all the same, so it must not reach the AI or the threshold.
+    if [[ "$cmd" != *' '* ]]; then
+        local dest="$cmd"
+        [[ "$dest" == '~' ]] && dest="$HOME"
+        [[ "$dest" == '~/'* ]] && dest="$HOME/${dest#\~/}"
+        [[ -d "$dest" ]] && return 0
+    fi
     local hist="${_gw_hist[$_gw_ctx]:-}"
     [[ "${hist##*$'\n'}" == "$cmd" ]] && return 0   # consecutive repeat
     if [[ -n "$hist" ]]; then hist+=$'\n'"$cmd"; else hist="$cmd"; fi

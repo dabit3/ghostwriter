@@ -40,10 +40,16 @@ output=$(ROOT="$tmp" PLUGIN="$repo_root/ghostwriter.plugin.zsh" \
         tabname "Pinned Work"
         [[ -e "$_gw_session_dir/pin" ]] && pin_state=yes || pin_state=no
         print -r -- "pinned=$(<$_gw_session_dir/title):$_gw_gen:$pin_state"
+        # Control characters in a title (e.g. from a hostile directory name)
+        # must never reach the tty: \e or \a would end the OSC sequence early
+        # and hand the terminal attacker-chosen escape sequences.
+        _gw_set_title "Bad$(printf "\033]52;c;x\007")Name"
+        print -r -- "ctrl=$(<$_gw_session_dir/title)"
     ')
 expected=$'initial=alpha:0\nforward=beta:1\nreturn=alpha:2\nsplit=Two word dir:3'
 expected+=$'\nsubshell=Two word dir:3\ncompleting=Two word dir:3\nrestored=Two word dir:3'
 expected+=$'\npinned=Pinned Work:4:yes'
+expected+=$'\nctrl=Bad]52;c;xName'
 
 if [[ "$output" != "$expected" ]]; then
     print -u2 -r -- "navigation regression"
